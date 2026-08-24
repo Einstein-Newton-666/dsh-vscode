@@ -18,7 +18,7 @@ export type PanelMessage =
   | { type: 'bridgeCopyText'; text: string; requestId: string }
   | { type: 'bridgeReadText'; requestId: string }
   | { type: 'bridgeReadTextAck'; requestId: string; ok: boolean; text?: string }
-  | { type: 'bridgeAck'; ok: boolean }
+  | { type: 'bridgeAck'; ok: boolean; version?: string }
   | { type: 'openSettings' }
   | { type: 'bridgeSaveImage'; requestId: string; name: string; dataB64: string; sessionCwd?: string }
   | { type: 'bridgeSaveImageAck'; requestId: string; ok: boolean; path?: string }
@@ -126,7 +126,15 @@ if (iframeEl) {
     // —— 上行：iframe 发来的消息，origin + source 双重校验 ——
     if (e.origin !== ALLOWED_ORIGIN || e.source !== iframeEl.contentWindow) return;
     // 握手回执：统一形状 { kind:'bridgeAck', ok }（不带 token 字段），只读 ok
-    if (d && d.kind === 'bridgeAck') { bridgeAcked = true; vscode.postMessage({ type: 'bridgeAck', ok: d.ok === true }); return; }
+    if (d && d.kind === 'bridgeAck') {
+      bridgeAcked = true;
+      vscode.postMessage({
+        type: 'bridgeAck',
+        ok: d.ok === true,
+        ...(typeof d.version === 'string' ? { version: d.version } : {}),
+      });
+      return;
+    }
     // 打开外链：转发给扩展 → vscode.env.openExternal
     if (d && d.kind === 'openExternal' && typeof d.url === 'string') { vscode.postMessage({ type: 'bridgeOpenExternal', url: d.url }); return; }
     // 打开文件：转发给扩展 → showTextDocument（携带可选 cwd）

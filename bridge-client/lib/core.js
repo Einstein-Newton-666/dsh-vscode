@@ -25,9 +25,10 @@ export function buildOpenFileMessage(path, cwd) {
   return cwd === undefined ? { kind: 'openFile', path } : { kind: 'openFile', path, cwd };
 }
 
-// 构造"工作区同步回执"消息（bridgeAck，path 可选）
-export function buildSyncWorkspaceAck(ok, path) {
-  return path === undefined ? { kind: 'bridgeAck', ok } : { kind: 'bridgeAck', ok, path };
+// 构造"工作区同步回执"消息（bridgeAck，path 可选；version 为桥接包版本，供扩展侧日志识别代码版本）
+export function buildSyncWorkspaceAck(ok, path, version) {
+  const base = path === undefined ? { kind: 'bridgeAck', ok } : { kind: 'bridgeAck', ok, path };
+  return version === undefined ? base : { ...base, version };
 }
 
 // 构造"复制文本"消息（iframe 页面 → 父页面 → 扩展 → 系统剪贴板）

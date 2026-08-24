@@ -23,6 +23,8 @@ window.__ModuleLoader__.load({
     console.log("[dsh-vscode-bridge] client.js executed");
     // —— 握手状态 ——
     let bridgeToken = ""; // 父页面下发的握手 token；未握手前为空，不激活任何拦截
+    // 桥接包版本（与插件版本统一，随包发布；安装器按「版本不一致或 client.js 内容不一致」强制重装）
+    const BRIDGE_VERSION = "0.3.1";
 
     // —— 剪贴板写桥接：VS Code webview 对跨源 iframe 的 navigator.clipboard.writeText 有权限拦截 ——
     // 背景：即使 iframe 声明 allow="clipboard-write"，VS Code（Electron）仍会拒绝写入
@@ -492,12 +494,13 @@ window.__ModuleLoader__.load({
         bridgeToken = d.token;
         imageFallbackEnabled = d.imageFallback === true; // v0.3.0：非视觉模型图片降级开关（随 hello 下发）
         // 诊断日志：页面可据此确认握手成功与降级开关状态（排查“图片上传不生效”用）
-        console.log("[dsh-vscode-bridge] handshake ok, v0.3.0, imageFallback=" + imageFallbackEnabled);
+        console.log("[dsh-vscode-bridge] handshake ok, v" + BRIDGE_VERSION + ", imageFallback=" + imageFallbackEnabled);
         // 附件图片捕获已由工厂期常驻绑定（bindImageCapture），此处仅刷新开关即可生效
         // 回执统一用 core.js 的 buildSyncWorkspaceAck 构造，形状与工作区同步回执一致
         // （{ kind: 'bridgeAck', ok }，不带 token 字段）；顶层 webview 靠 origin + source
         // 校验消息来源，按 { kind: 'bridgeAck', ok } 解析，避免同 kind 两种形状。
-        parent.postMessage(buildSyncWorkspaceAck(true), "*");
+        // 回执携带桥接版本：扩展侧日志据此直接确认页面里跑的是哪个版本的桥接代码
+        parent.postMessage(buildSyncWorkspaceAck(true, undefined, BRIDGE_VERSION), "*");
         return;
       }
       // 剪贴板写回执：resolve / reject 对应的 writeText Promise

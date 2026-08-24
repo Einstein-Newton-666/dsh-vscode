@@ -61,9 +61,11 @@ test('桥接版本与插件版本统一（一同随包发布），且卸载钩�
   // ② 版本统一：bridge-client 版本 === 插件版本（防止日后漂移）
   const bridge = JSON.parse(readFileSync(join(__dirname, '..', '..', 'bridge-client', 'package.json'), 'utf8'));
   assert.equal(bridge.version, p.version, '桥接包版本必须与插件版本一致（一同被上传到商城）');
-  // ③ 握手诊断日志随版本号（DevTools 排查依据）
+  // ③ 握手诊断日志随版本号（DevTools 排查依据；client.js 用 BRIDGE_VERSION 常量拼接）
   const client = readFileSync(join(__dirname, '..', '..', 'bridge-client', 'lib', 'client.js'), 'utf8');
-  assert.ok(client.includes('handshake ok, v' + p.version + ','), '握手日志应同步版本号 v' + p.version);
+  assert.ok(client.includes('const BRIDGE_VERSION = "' + p.version + '";'), 'client.js 应声明 BRIDGE_VERSION = ' + p.version);
+  assert.ok(client.includes('ok, v" + BRIDGE_VERSION'), '握手日志应使用 BRIDGE_VERSION 常量拼接');
+  assert.ok(client.includes('buildSyncWorkspaceAck(true, undefined, BRIDGE_VERSION)'), '握手回执应携带桥接版本');
   // ④ 构建产物应包含卸载脚本（build.mjs 在两种模式下都会构建 out/uninstall.js）
   assert.ok(existsSync(join(__dirname, '..', 'uninstall.js')), '构建产物应包含 out/uninstall.js');
 });

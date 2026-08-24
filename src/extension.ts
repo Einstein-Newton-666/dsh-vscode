@@ -217,8 +217,9 @@ export function activate(context: vscode.ExtensionContext): void {
   }
 
   /** 面板握手回执回调（两个面板共享）：记录结果并取消超时（握手已发生，无论成败） */
-  function onBridgeAck(ok: boolean): void {
-    appendLog(`[bridge] handshake ${ok ? 'ok' : 'failed'}`);
+  function onBridgeAck(ok: boolean, version?: string): void {
+    // 日志带桥接版本：页面里跑的是哪个版本的桥接代码一目了然（排查“装了新版还在跑旧行为”用）
+    appendLog(`[bridge] handshake ${ok ? 'ok' : 'failed'}${version ? ` (bridge v${version})` : ''}`);
     handshakeOk = ok;
     clearHandshakeTimer();
   }

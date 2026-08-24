@@ -44,7 +44,7 @@ export class DshPanelProvider implements vscode.WebviewViewProvider {
   constructor(
     private manager: ServiceManager,
     private onFirstOpen?: () => void,
-    private onBridgeAck?: (ok: boolean) => void,
+    private onBridgeAck?: (ok: boolean, version?: string) => void,
     private workspaceRoot: () => string | undefined = () => undefined,
     private bridgeEnabled: () => boolean = () => true,
     private remoteEnabled: () => boolean = () => false,
@@ -131,8 +131,8 @@ export class DshPanelProvider implements vscode.WebviewViewProvider {
         void handleBridgeMessage(msg, this.bridgeDeps());
         break;
       case 'bridgeAck':
-        // 握手回执：通知注入的回调（Task 7 据此评估桥接状态）
-        this.onBridgeAck?.(msg.ok);
+        // 握手回执：通知注入的回调（Task 7 据此评估桥接状态；version 供日志确认桥接代码版本）
+        this.onBridgeAck?.(msg.ok, msg.version);
         break;
     }
   }

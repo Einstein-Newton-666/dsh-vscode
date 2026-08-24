@@ -21,7 +21,7 @@ import {
 // 同时让 exists(dest) 为真；真实递归复制由生产侧的 createNodeFs（fs.cpSync recursive）负责，此处不模拟。
 // copyPkgVersion 指定时，复制产物带该版本号（模拟真实复制「随附版本的包」），
 // 供「版本不一致强制重装」用例断言刷新结果。
-function makeMemFs(init: Record<string, string> = {}, copyPkgVersion?: string): InstallerFs {
+function makeMemFs(init: Record<string, string> = {}, copyPkgVersion?: string, copyClientContent?: string): InstallerFs {
   const files = new Map(Object.entries(init));
   const dirs = new Set<string>();
   return {
@@ -34,6 +34,9 @@ function makeMemFs(init: Record<string, string> = {}, copyPkgVersion?: string): 
       files.set(`${dest}/package.json`, copyPkgVersion
         ? `{"name":"dsh-vscode-bridge","version":"${copyPkgVersion}"}`
         : `{"name":"dsh-vscode-bridge","copied":"${src}"}`);
+      if (copyClientContent !== undefined) {
+        files.set(`${dest}/lib/client.js`, copyClientContent);
+      }
     },
     rmDir: (p) => { dirs.delete(p); for (const k of [...files.keys()]) { if (k.startsWith(`${p}/`)) files.delete(k); } },
     readdir: () => [],
@@ -85,6 +88,50 @@ test('已装包版本与随附版本不一致：强制重装刷新为新版本',
   for (const t of bridgeTargetDirs(profile)) {
     const pkg = JSON.parse(fs.readFile(`${t}/package.json`));
     assert.equal(pkg.version, '0.2.2'); // 已刷新为随附版本
+  }
+});
+
+test('同版本但 client.js 内容不同：强制重装刷新（版本统一后的防残留）', () => {
+  const profile = '/home/u/.dsh/profiles/web';
+  const patchPath = profile + '/cordis.patch.yml';
+  const source = '/ext/bridge-client';
+  // 随附源：版本 0.3.1 + 新 client.js；复制产物同样带 0.3.1 + 新 client.js
+  const fs = makeMemFs({
+    [patchPath]: '[]\n',
+    [source + '/package.json']: '{"name":"dsh-vscode-bridge","version":"0.3.1"}',
+    [source + '/lib/client.js']: 'NEW-CLIENT',
+  }, '0.3.1', 'NEW-CLIENT');
+  fs.mkdir(profile);
+  const opts = { dshHome: '/home/u/.dsh', bridgeSourceDir: source, fs };
+  assert.equal(installBridge(opts).status, 'ok'); // 首次安装
+  // 模拟残留旧桥接：版本号相同（0.3.1），但 client.js 是旧代码
+  for (const t of bridgeTargetDirs(profile)) {
+    fs.writeFile(t + '/lib/client.js', 'OLD-CLIENT');
+  }
+  // 幂等分支：版本一致但内容不同 → 判定不可用 → 强制重装，恢复为新 client.js
+  const r = installBridge(opts);
+  assert.equal(r.status, 'ok');
+  for (const t of bridgeTargetDirs(profile)) {
+    assert.equal(fs.readFile(t + '/lib/client.js'), 'NEW-CLIENT', '同版本旧代码应被重装刷新');
+  }
+});
+
+test('同版本且 client.js 内容一致：跳过重装（幂等）', () => {
+  const profile = '/home/u/.dsh/profiles/web';
+  const patchPath = profile + '/cordis.patch.yml';
+  const source = '/ext/bridge-client';
+  const fs = makeMemFs({
+    [patchPath]: '[]\n',
+    [source + '/package.json']: '{"name":"dsh-vscode-bridge","version":"0.3.1"}',
+    [source + '/lib/client.js']: 'SAME',
+  }, '0.3.1', 'SAME');
+  fs.mkdir(profile);
+  const opts = { dshHome: '/home/u/.dsh', bridgeSourceDir: source, fs };
+  assert.equal(installBridge(opts).status, 'ok');
+  const r2 = installBridge(opts); // 幂等：内容一致 → 跳过重装
+  assert.equal(r2.status, 'ok');
+  for (const t of bridgeTargetDirs(profile)) {
+    assert.equal(fs.readFile(t + '/lib/client.js'), 'SAME', '内容一致不应重装');
   }
 });
 

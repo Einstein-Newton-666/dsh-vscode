@@ -159,7 +159,7 @@ export function installBridge(opts: BridgeInstallOptions): BridgeInstallResult {
     // 仅 exists 会漏掉「目录在但 package.json 不可读」的坏包（chmod 000 事故），
     // 且 Windows 场景某目标缺失但其余完好时也需自愈补回。
     const wantVersion = bridgeVersion(opts.bridgeSourceDir, opts.fs);
-    const unusable = targets.filter((t) => !isBridgeUsable(t, opts.fs, wantVersion));
+    const unusable = targets.filter((t) => !isBridgeUsable(t, opts.fs, wantVersion, opts.bridgeSourceDir));
     if (unusable.length === 0) {
       return { status: 'ok', profileDir, bridgeDir };
     }
@@ -304,29 +304,43 @@ function buildPatchEntry(beginMark: string): string {
 }
 
 /**
- * 可用性验证：桥接目录完好与否，取决于能否读到含 `"name"` 字段的 package.json，
- * 且（插件随附版本已知时）version 与随附版本一致。
- * 版本不一致视为「旧版残留」——升级插件后 installBridge 的幂等分支若不比对版本，
- * 会跳过已装旧包、导致零依赖修复等包内变更永远无法触达用户（桥接包无独立升级通道），
- * 因此比对版本并强制重装刷新。
+ * 可用性验证：桥接目录完好与否，取决于能否读到含 `"name"` 字段的 package.json、
+ * version 与随附版本一致（版本已知时），且【随附 client.js 与已装 client.js 字节一致】。
+ * 版本比对的意义：版本不一致视为「旧版残留」→ 强制重装刷新。
+ * 内容比对的意义：桥接版本与插件版本已统一（一同随包发布），版本号不再随每次代码修复递增，
+ * 若仅比版本，会出现「版本号相同但代码不同 → 安装器跳过重装」——升级插件后用户仍跑旧桥接代码
+ * （生产实测：商店 v0.3.0 用户残留旧 0.3.0 桥接，图片上传仍报旧弹窗）。故必须再按内容判定。
  * 读取抛错（权限不可读/chmod 000）或内容不含 `"name"` 均视为坏包 → 需要强制重装。
- * 仅 exist 判定会漏掉「目录在但包不可读」的坏场景（生产事故根因之一）。
  *
- * @param wantVersion 插件随附桥接包的版本号；为空串表示源包版本未知（源不可读等），
- *                    此时退回旧行为（只看 `"name"`，不比版本）
+ * @param wantVersion 插件随附桥接包版本号；空串表示源包版本未知（退回只看 `"name"`）
+ * @param sourceDir 插件随附桥接目录（提供时做 client.js 内容比对；源不可读时退回版本判定）
  */
-function isBridgeUsable(bridgeDir: string, fs: InstallerFs, wantVersion: string): boolean {
+function isBridgeUsable(bridgeDir: string, fs: InstallerFs, wantVersion: string, sourceDir?: string): boolean {
   const pkgPath = join(bridgeDir, 'package.json');
   try {
     const raw = fs.readFile(pkgPath);
     if (!raw.includes('"name"')) return false;
-    if (wantVersion === '') return true;
-    try {
-      const installed = JSON.parse(raw).version;
-      return installed === wantVersion;
-    } catch {
-      return false;
+    if (wantVersion !== '') {
+      try {
+        if (JSON.parse(raw).version !== wantVersion) return false;
+      } catch {
+        return false;
+      }
     }
+    if (sourceDir) {
+      let wantClient: string;
+      try {
+        wantClient = fs.readFile(join(sourceDir, 'lib', 'client.js'));
+      } catch {
+        return true; // 随附源不可读：退回版本判定，避免误重装
+      }
+      try {
+        return fs.readFile(join(bridgeDir, 'lib', 'client.js')) === wantClient;
+      } catch {
+        return false; // 已装 client.js 不可读 → 坏包/旧结构 → 重装
+      }
+    }
+    return true;
   } catch {
     return false;
   }
