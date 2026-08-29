@@ -131,6 +131,11 @@ export class ContextController {
     }
   }
 
+  /** 释放资源(契约方法;当前无计时器/监听器,清空去重记录即可) */
+  dispose(): void {
+    this.lastAutoInject = null;
+  }
+
   private reportError(err: unknown): void {
     if (err instanceof DshApiError) {
       if (err.kind === 'unsupported') {
