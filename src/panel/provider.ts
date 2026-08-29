@@ -13,6 +13,21 @@ import {
   type PanelMessage,
   type PageCtx,
 } from './html';
+// 注:简报曾建议 `import { describeFileRef } from '../context/tracker'`,但本文件中
+// refreshContextBar / render 实际未使用该函数(文件标签由 context.getFileLabel() 直接提供),
+// 而 tsconfig 开启 noUnusedLocals,冗余 import 会导致 typecheck 失败,故不引入。
+
+/** 上下文能力依赖(由扩展入口注入;未注入时工具条与上下文消息均不激活) */
+export interface ContextPanelDeps {
+  /** 当前文件标签(显示引用路径);无文件返回 null */
+  getFileLabel(): string | null;
+  /** 自动跟随开关当前值 */
+  getAutoFollow(): boolean;
+  /** 把当前文件加入 DSH 上下文 */
+  addFileContext(): void;
+  /** 切换自动跟随 */
+  toggleAutoFollow(): void;
+}
 
 export class DshPanelProvider implements vscode.WebviewViewProvider {
   private view: vscode.WebviewView | null = null;
@@ -30,6 +45,8 @@ export class DshPanelProvider implements vscode.WebviewViewProvider {
    * @param workspaceRoot 工作区根目录注入函数（openFile 相对路径解析的兜底基准；可选，默认无根）
    * @param bridgeEnabled 桥接是否启用的 getter（Task 7 由 dsh.bridge.enabled 配置驱动；默认启用，
    *   disabled 时不注入握手脚本，避免向未安装桥接的 DSH 页面发送无意义的握手）
+   * @param context 上下文能力依赖（文件切换/设置变更由扩展入口注入；可选，未注入时工具条与
+   *   上下文消息均不激活）
    */
   constructor(
     private manager: ServiceManager,
@@ -37,6 +54,7 @@ export class DshPanelProvider implements vscode.WebviewViewProvider {
     private onBridgeAck?: (ok: boolean) => void,
     private workspaceRoot: () => string | undefined = () => undefined,
     private bridgeEnabled: () => boolean = () => true,
+    private context?: ContextPanelDeps,
   ) {
     // 订阅状态变化，重绘面板（iframe 与占位页由状态驱动，无白屏路径）
     manager.onChange(() => this.render());
@@ -99,6 +117,13 @@ export class DshPanelProvider implements vscode.WebviewViewProvider {
         // 握手回执：通知注入的回调（Task 7 据此评估桥接状态）
         this.onBridgeAck?.(msg.ok);
         break;
+      case 'addFileContext':
+        this.context?.addFileContext();
+        break;
+      case 'toggleAutoFollow':
+        this.context?.toggleAutoFollow();
+        this.render(); // 开关状态变化后重渲染
+        break;
     }
   }
 
@@ -117,7 +142,9 @@ export class DshPanelProvider implements vscode.WebviewViewProvider {
         html = readyPage(s.url ?? `http://${host}:${port}/`, ctx, {
           token: this.bridgeToken,
           enabled: this.bridgeEnabled(), // 由 dsh.bridge.enabled 配置驱动（Task 7 接入）
-        });
+        }, this.context
+          ? { fileLabel: this.context.getFileLabel(), autoFollow: this.context.getAutoFollow() }
+          : undefined);
         break;
       case 'failed':
         html = errorPage(t, ctx, s.error ? t(s.error, s.errorVars) : t('err.loadFailed'));
@@ -130,5 +157,16 @@ export class DshPanelProvider implements vscode.WebviewViewProvider {
         html = loadingPage(t, ctx);
     }
     v.webview.html = html;
+  }
+
+  /** 工具条状态刷新:向 webview 推送下行消息并重渲染(文件切换/设置变更时由扩展调用) */
+  refreshContextBar(): void {
+    if (!this.view || !this.context) return;
+    void this.view.webview.postMessage({
+      kind: 'updateContextBar',
+      fileLabel: this.context.getFileLabel(),
+      autoFollow: this.context.getAutoFollow(),
+    });
+    this.render();
   }
 }
