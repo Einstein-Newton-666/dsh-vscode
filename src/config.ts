@@ -16,6 +16,10 @@ export interface RawDshConfig {
   workspaceRootIndex?: number;
   /** 是否抑制桥接警告（dsh.bridge.silenceWarning） */
   silenceWarning?: boolean;
+  /** 是否自动跟随当前文件注入上下文（dsh.context.autoFollow） */
+  autoFollow?: boolean;
+  /** 自动跟随防抖毫秒（dsh.context.followDebounceMs） */
+  followDebounceMs?: number;
 }
 
 /** 规范化后的配置（均有合法默认值） */
@@ -31,6 +35,10 @@ export interface DshConfig {
   workspaceRootIndex: number;
   /** 是否抑制桥接警告（dsh.bridge.silenceWarning） */
   silenceWarning: boolean;
+  /** 是否自动跟随当前文件注入上下文（dsh.context.autoFollow） */
+  autoFollow: boolean;
+  /** 自动跟随防抖毫秒（dsh.context.followDebounceMs） */
+  followDebounceMs: number;
 }
 
 /** 默认配置 */
@@ -43,6 +51,8 @@ export const DEFAULTS: DshConfig = {
   bridgeEnabled: true,
   workspaceRootIndex: 0,
   silenceWarning: false,
+  autoFollow: false,
+  followDebounceMs: 800,
 };
 
 /** 安全边界：仅允许回环地址 */
@@ -106,8 +116,27 @@ export function normalizeConfig(raw: RawDshConfig): { config: DshConfig; errors:
     workspaceRootIndex = raw.workspaceRootIndex;
   }
 
+  // 自动跟随开关：布尔设置沿用 autoStart 的缺省处理（非法静默回退）
+  const autoFollow = typeof raw.autoFollow === 'boolean' ? raw.autoFollow : DEFAULTS.autoFollow;
+
+  // followDebounceMs：300..5000 整数，非法回退默认并记录错误
+  let followDebounceMs: number;
+  if (raw.followDebounceMs === undefined) {
+    followDebounceMs = DEFAULTS.followDebounceMs;
+  } else if (
+    typeof raw.followDebounceMs !== 'number' ||
+    !Number.isInteger(raw.followDebounceMs) ||
+    raw.followDebounceMs < 300 ||
+    raw.followDebounceMs > 5000
+  ) {
+    errors.push(`dsh.context.followDebounceMs must be an integer in 300..5000, got ${JSON.stringify(raw.followDebounceMs)}`);
+    followDebounceMs = DEFAULTS.followDebounceMs;
+  } else {
+    followDebounceMs = raw.followDebounceMs;
+  }
+
   return {
-    config: { host, port, autoStart, stopOnExit, extraArgs, bridgeEnabled, workspaceRootIndex, silenceWarning },
+    config: { host, port, autoStart, stopOnExit, extraArgs, bridgeEnabled, workspaceRootIndex, silenceWarning, autoFollow, followDebounceMs },
     errors,
   };
 }
@@ -124,5 +153,7 @@ export function readConfig(): { config: DshConfig; errors: string[] } {
     bridgeEnabled: ws.get<boolean>('bridge.enabled'),
     workspaceRootIndex: ws.get<number>('workspaceRootIndex'),
     silenceWarning: ws.get<boolean>('bridge.silenceWarning'),
+    autoFollow: ws.get<boolean>('context.autoFollow'),
+    followDebounceMs: ws.get<number>('context.followDebounceMs'),
   });
 }
