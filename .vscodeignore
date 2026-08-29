@@ -14,3 +14,8 @@ tsconfig.json
 .gitignore
 README.zh.md
 CONTRIBUTING.md
+# 环境残留目录（git worktree / npm 缓存 / 代码索引等）：不随扩展打包
+.worktrees/**
+.npm-cache/**
+.code-atlas/**
+.git/**
