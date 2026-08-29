@@ -5,6 +5,9 @@ import assert from 'node:assert/strict';
 import net from 'node:net';
 import type { AddressInfo } from 'node:net';
 import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { probeService } from '../../src/service/detect';
 import { createProcessRunner } from '../../src/service/process';
 import { ServiceManager } from '../../src/service/manager';
@@ -22,6 +25,12 @@ function freePort(): Promise<number> {
 
 /** dsh 命令是否可用 */
 const hasDsh = spawnSync('dsh', ['--version'], { timeout: 5000 }).status === 0;
+
+// 独立 DSH_HOME:node --test 按文件并行,两个集成测试文件若共享同一目录会互相干扰
+// (实测偶发 workspace.create 404,根因为并行 dsh 进程争用同一 HOME 的初始化)。此处
+// 分配独立临时目录并写入进程环境,子进程(spawn)继承后互不影响。
+const dshHome = mkdtempSync(join(tmpdir(), 'dsh-it-home-'));
+process.env.DSH_HOME = dshHome;
 
 test('真实 dsh web：启动/复用/停止/意外退出全流程', { skip: !hasDsh && 'dsh 命令不可用，跳过' }, async () => {
   const port = await freePort();
@@ -60,5 +69,6 @@ test('真实 dsh web：启动/复用/停止/意外退出全流程', { skip: !has
   } finally {
     await manager.stop(); // 清理：确保不残留 dsh 进程
     manager.dispose();
+    rmSync(dshHome, { recursive: true, force: true });
   }
 });

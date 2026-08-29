@@ -1,14 +1,17 @@
 // test/integration/dsh-context.test.ts — 真实 dsh web 的上下文注入链路
-// 无 dsh 命令的环境自动跳过;随机空闲端口;DSH_HOME 沿用进程环境(沙箱环境需指向可写目录)。
+// 无 dsh 命令的环境自动跳过;随机空闲端口;独立 DSH_HOME 目录(见下方说明)。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
 import type { AddressInfo } from 'node:net';
 import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { probeService } from '../../src/service/detect';
 import { createProcessRunner } from '../../src/service/process';
 import { ServiceManager } from '../../src/service/manager';
-import { createDshApi, type DshApi } from '../../src/context/dshApi';
+import { createDshApi, DshApiError, type DshApi, type WorkspaceView } from '../../src/context/dshApi';
 import { buildContextMessage, findTargetSession, injectContext } from '../../src/context/injector';
 
 function freePort(): Promise<number> {
@@ -22,6 +25,37 @@ function freePort(): Promise<number> {
 }
 
 const hasDsh = spawnSync('dsh', ['--version'], { timeout: 5000 }).status === 0;
+
+// 独立 DSH_HOME:node --test 按文件并行,两个集成测试文件若共享同一目录会互相干扰
+// (实测偶发 workspace.create 404,根因为并行 dsh 进程争用同一 HOME 的初始化)。此处
+// 分配独立临时目录并写入进程环境,子进程(spawn)继承后互不影响。
+const dshHome = mkdtempSync(join(tmpdir(), 'dsh-it-home-'));
+process.env.DSH_HOME = dshHome;
+
+// dsh 0.1.1-rc.2 启动时序(实测):首页(含 __DSH_BOOT__ 标记)在 API 路由注册之前就可访问,
+// 二者相差约 1 秒。ensureRunning 基于首页探测,返回 ready 后立即调用 workspace.create 会撞上
+// 404 窗口(kind=unsupported)。这里轮询重试首次 workspace.create,直到成功或超时。
+async function waitApiReady(
+  api: DshApi,
+  root: string,
+  timeoutMs = 10000,
+): Promise<{ workspace: WorkspaceView; created: boolean }> {
+  const deadline = Date.now() + timeoutMs;
+  let lastErr: unknown;
+  while (Date.now() < deadline) {
+    try {
+      return await api.workspaceCreate(root);
+    } catch (err) {
+      if (err instanceof DshApiError && err.kind === 'unsupported') {
+        lastErr = err;
+        await new Promise((r) => setTimeout(r, 300));
+        continue;
+      }
+      throw err;
+    }
+  }
+  assert.fail(`等待 dsh API 就绪超时(${timeoutMs}ms):${lastErr instanceof Error ? lastErr.message : String(lastErr)}`);
+}
 
 // dsh 0.1.1-rc.2 行为差异(实证 0.1.0-rc.6 无此限制):
 // queue 模式的 prompt 若在首轮 turn 尚未结束时到达,会被服务端吞掉,不写入 history。
@@ -51,8 +85,8 @@ test('上下文注入全链路:workspace 幂等 → 会话新建/复用 → prom
     const api: DshApi = createDshApi(`http://127.0.0.1:${port}`);
     const root = process.cwd();
 
-    // workspace.create 幂等
-    const w1 = await api.workspaceCreate(root);
+    // workspace.create 幂等(首次成功经 waitApiReady 等到 API 路由就绪)
+    const w1 = await waitApiReady(api, root);
     const w2 = await api.workspaceCreate(root);
     assert.equal(w1.workspace.workspaceId, w2.workspace.workspaceId);
     assert.equal(w1.created, true);
@@ -88,5 +122,6 @@ test('上下文注入全链路:workspace 幂等 → 会话新建/复用 → prom
   } finally {
     await manager.stop();
     manager.dispose();
+    rmSync(dshHome, { recursive: true, force: true });
   }
 });
