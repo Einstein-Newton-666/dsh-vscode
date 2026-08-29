@@ -44,11 +44,14 @@ export interface CurrentFileTracker {
   getCurrent(): string | undefined;
   /** 订阅结算事件,返回退订函数 */
   onSettled(cb: (absPath: string | undefined) => void): () => void;
+  /** 更新防抖窗口(设置项变更时调用) */
+  setDebounceMs(ms: number): void;
   dispose(): void;
 }
 
 export function createCurrentFileTracker(opts: { debounceMs: number; timers?: TrackerTimers }): CurrentFileTracker {
   const timers = opts.timers ?? realTimers;
+  let debounceMs = opts.debounceMs;
   let pending: string | undefined;
   let current: string | undefined;
   let handle: unknown;
@@ -64,12 +67,15 @@ export function createCurrentFileTracker(opts: { debounceMs: number; timers?: Tr
     setFile(absPath) {
       pending = absPath;
       if (handle !== undefined) timers.clearTimeout(handle);
-      handle = timers.setTimeout(settle, opts.debounceMs);
+      handle = timers.setTimeout(settle, debounceMs);
     },
     getCurrent: () => current,
     onSettled(cb) {
       listeners.add(cb);
       return () => listeners.delete(cb);
+    },
+    setDebounceMs(ms) {
+      debounceMs = ms;
     },
     dispose() {
       if (handle !== undefined) timers.clearTimeout(handle);
