@@ -36,7 +36,7 @@ test('真实 dsh web：启动/复用/停止/意外退出全流程', { skip: !has
   const port = await freePort();
   const runner = createProcessRunner();
   const manager = new ServiceManager(
-    { host: '127.0.0.1', port, extraArgs: [], autoStart: true, timeoutMs: 3000, pollMs: 300 },
+    { host: '127.0.0.1', port, extraArgs: ['--no-open'], autoStart: true, timeoutMs: 3000, pollMs: 300 },
     { probeService, processRunner: runner, log: () => {}, startTimeoutMs: 20000 },
   );
   try {

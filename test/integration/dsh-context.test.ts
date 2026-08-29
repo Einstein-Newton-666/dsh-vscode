@@ -76,7 +76,7 @@ async function waitTurnEnd(api: DshApi, sessionId: string, timeoutMs = 15000): P
 test('上下文注入全链路:workspace 幂等 → 会话新建/复用 → prompt → history 验证', { skip: !hasDsh && 'dsh 命令不可用,跳过' }, async () => {
   const port = await freePort();
   const manager = new ServiceManager(
-    { host: '127.0.0.1', port, extraArgs: [], autoStart: true, timeoutMs: 3000, pollMs: 300 },
+    { host: '127.0.0.1', port, extraArgs: ['--no-open'], autoStart: true, timeoutMs: 3000, pollMs: 300 },
     { probeService, processRunner: createProcessRunner(), log: () => {}, startTimeoutMs: 20000 },
   );
   try {
