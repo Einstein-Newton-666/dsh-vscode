@@ -24,7 +24,10 @@ Use the [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness
 - 🛟 **Error fallbacks**: port occupied, `dsh` missing, start timeout, crash/disconnect — each has a dedicated page with one-click reconnect, never a blank screen;
 - 🌐 **Bilingual UI**: copy follows the VS Code display language — Chinese for `zh-*`, English otherwise;
 - 🧹 **Clean exit**: closing the window stops the auto-started service, no zombie processes; manually started services are never touched;
-- 🔒 **Security boundary**: loopback addresses only (127.0.0.1 / localhost / [::1]); no credentials are read.
+- 🔒 **Security boundary**: loopback addresses only (127.0.0.1 / localhost / [::1]); no credentials are read;
+- 🧠 **File context integration**: the panel toolbar shows the current file with an *Add* button and an *Auto-follow* toggle — inject the current file into the AI context in one click, or let it follow automatically as you switch files (injected into the most recent session of the current project, auto-created if none);
+- 🖱️ **Right-click menus**: "Add to Context / Ask DSH / Send Selection" directly from the editor, the explorer, and the editor title bar;
+- 📁 **Workspace adaptation**: switching VS Code workspaces restarts the DSH service with the new project as its working directory and idempotently registers the DSH workspace.
 
 ## 📥 Installation
 
@@ -104,6 +107,23 @@ To remove: run `DSH: Uninstall Bridge` — the extension deletes the marked entr
 ### Degradation behavior
 
 The bridge only works inside the panel. If it is inactive (e.g. you open the DSH page in a browser, or the install failed), the panel remains **fully usable** — only the two integrations above are unavailable; a one-time startup warning (with "Retry Install" / "Don't Show Again") is shown.
+
+## 🧠 Context integration
+
+The panel toolbar shows the current file with **Add** and **Auto-follow** controls: **Add** injects the current file into the AI context; with auto-follow enabled, switching files automatically injects the current file into the most recent session of the current project (creating a new session if none exists).
+
+### Context integration settings (`dsh.context.*`)
+
+| Setting | Default | Description |
+|---|---|---|
+| `dsh.context.autoFollow` | `false` | Automatically inject the current file into the AI context when switching files |
+| `dsh.context.followDebounceMs` | `800` | Auto-follow debounce delay in milliseconds (300-5000) |
+
+### Right-click menus
+
+- Editor: Add to Context / Ask DSH / Send Selection;
+- Explorer: Add to Context / Ask DSH;
+- Editor title bar: Open Panel / Open in Browser / Restart / Stop / Copy URL.
 
 ## ⚙️ Settings (`dsh.*`)
 

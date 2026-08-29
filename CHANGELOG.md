@@ -2,6 +2,18 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.3.0] - 2026-08-29
+
+### 新增
+
+- 当前文件 AI 上下文联动：面板上下文工具条（当前文件 + 加入按钮 + 自动跟随开关）；设置 `dsh.context.autoFollow` / `dsh.context.followDebounceMs`；自动跟随注入到当前项目下最近会话（无则自动新建）
+- 右键菜单：编辑器（加入上下文 / 用 DSH 询问 / 发送选区）、资源管理器（加入上下文 / 用 DSH 询问）、编辑器标题栏（打开面板 / 浏览器打开 / 重启 / 停止 / 复制 URL）
+- 工作目录自适应：切换 VS Code 工作区自动以新项目为工作目录重启 DSH 服务，并幂等注册 DSH 工作区
+
+### 修复
+
+- ServiceManager.reconfigure 的自比较 bug；cwd 变化现在会正确触发服务重启
+
 ## [0.2.1] - 2026-08-16
 
 ### 修复
