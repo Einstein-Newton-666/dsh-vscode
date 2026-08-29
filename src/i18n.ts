@@ -36,6 +36,10 @@ const messages = {
     'info.urlCopied': 'URL copied: {url}',
     'info.notReady': 'DSH service is not ready yet.',
     'info.stopped': 'DSH service stopped.',
+    // 上下文工具条
+    'ctx.currentFile': 'Current file',
+    'ctx.add': 'Add to Context',
+    'ctx.autoFollow': 'Auto-follow',
     // 桥接状态与警告
     'bridge.warnDegraded':
       'DSH bridge is not active. These features are unavailable: 1) click links to open in browser 2) click file paths to open in VS Code. You can retry installing the bridge or silence this warning.',
@@ -72,6 +76,10 @@ const messages = {
     'info.urlCopied': '已复制网址：{url}',
     'info.notReady': 'DSH 服务尚未就绪。',
     'info.stopped': 'DSH 服务已停止。',
+    // 上下文工具条
+    'ctx.currentFile': '当前文件',
+    'ctx.add': '加入上下文',
+    'ctx.autoFollow': '自动跟随',
     'bridge.warnDegraded':
       'DSH 桥接未生效，以下功能不可用：①点击链接跳转浏览器 ②点击文件路径在 VS Code 打开。可重试安装桥接，或不再显示本警告。',
     'bridge.retryNow': '重试安装',
