@@ -246,3 +246,31 @@ test('复用外部服务 stop()：清理健康定时器并回到 idle', async ()
   assert.equal(h.probeCount, probesBefore); // 无新增探测 = 定时器已清理
   h.manager.dispose();
 });
+
+test('reconfigure 换 cwd:自启服务重启且以新 cwd 生效', async () => {
+  const h = makeHarness();
+  h.probeQueue = ['down', 'dsh'];
+  await h.manager.ensureRunning();
+  const oldChild = h.child!;
+  h.probeQueue = ['down', 'dsh'];
+  const s = await h.manager.reconfigure({
+    host: '127.0.0.1', port: 3080, extraArgs: [], autoStart: true, timeoutMs: 100, pollMs: 5, cwd: '/new/project',
+  });
+  assert.equal(s.state, 'ready');
+  assert.ok(oldChild.killed.length > 0); // cwd 变化触发重启:旧子进程被停
+  h.manager.dispose(); // 简报原文未含 dispose,但 harness 的 30s 健康探测 interval 会阻止 node --test 退出,必须清理
+});
+
+test('reconfigure host/port/cwd 全不变:不重启(无多余 spawn)', async () => {
+  const h = makeHarness();
+  h.probeQueue = ['down', 'dsh'];
+  await h.manager.ensureRunning();
+  const oldChild = h.child!;
+  const s = await h.manager.reconfigure({
+    host: '127.0.0.1', port: 3080, extraArgs: [], autoStart: true, timeoutMs: 100, pollMs: 5, cwd: undefined,
+  });
+  assert.equal(s.state, 'ready');
+  assert.equal(h.spawnCount, 1); // 无新 spawn
+  assert.equal(h.child, oldChild);
+  h.manager.dispose(); // 同上:清理健康探测 interval,避免测试进程挂起
+});
