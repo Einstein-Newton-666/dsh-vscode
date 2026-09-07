@@ -53,10 +53,11 @@ const skipReason = !hasDsh
 
 test('真实 dsh web：启动/复用/停止/意外退出全流程', { skip: skipReason }, async () => {
   const port = await freePort();
+  const launchUrls: string[] = [];
   const runner = createProcessRunner();
   const manager = new ServiceManager(
     { host: '127.0.0.1', port, extraArgs: [], autoStart: true, timeoutMs: 3000, pollMs: 300 },
-    { probeService, processRunner: runner, log: () => {}, startTimeoutMs: 20000 },
+    { probeService, processRunner: runner, log: () => {}, startTimeoutMs: 20000, onLaunchUrl: (u) => launchUrls.push(u) },
   );
   try {
     // 1) 自动启动
@@ -65,6 +66,22 @@ test('真实 dsh web：启动/复用/停止/意外退出全流程', { skip: skip
     assert.equal(s1.owned, true);
     assert.equal(s1.url, `http://127.0.0.1:${port}/`);
     assert.equal(await probeService('127.0.0.1', port, 3000), 'dsh');
+
+    // 1.5) stdout 启动网址捕获：0.1.2 必打印 dsh web: …/?token=…（含 LAN 后缀同行也取主 URL）
+    await new Promise<void>((resolve) => {
+      const deadline = Date.now() + 10000;
+      const poll = setInterval(() => {
+        if (launchUrls.length > 0) {
+          clearInterval(poll);
+          resolve();
+        } else if (Date.now() > deadline) {
+          clearInterval(poll);
+          throw new Error('未捕获到 dsh web 启动网址');
+        }
+      }, 100);
+    });
+    assert.equal(launchUrls.length, 1, '启动网址应恰好捕获一次');
+    assert.ok(new URL(launchUrls[0]).searchParams.has('token'), '启动网址应携带登录 token（0.1.2 鉴权）');
 
     // 2) 幂等复用（不重复启动）：第二次 ensureRunning 后 lastChild 仍指向同一子进程
     const firstChild = runner.lastChild;
