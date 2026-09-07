@@ -11,7 +11,16 @@ import { ServiceManager, type ManagerOptions } from './service/manager';
 import { DshPanelProvider } from './panel/provider';
 import { StatusBarController } from './statusbar';
 import { resolveWorkspaceRoot } from './workspaceRoot';
-import { createUrlResolver, handshakeTimeoutMs, bridgeEvalDelayMs } from './remote';
+import { createUrlResolver, handshakeTimeoutMs, bridgeEvalDelayMs, classifyRemote, toLocalhostUrl } from './remote';
+import { createDshProxy, type DshProxy } from './service/proxy';
+import {
+  exchangeSession,
+  getValidSession,
+  parseLaunchTarget,
+  type SessionStore,
+  type StoredSession,
+} from './service/session';
+import type { AuthUiState, PanelProviderUiOpts } from './panel/provider';
 import {
   installBridge,
   uninstallBridge,
@@ -24,8 +33,13 @@ import { evaluateBridgeStatus, bridgeWarningText } from './bridge/status';
 
 let manager: ServiceManager | null = null;
 let output: vscode.OutputChannel | null = null;
-/** 当前展示用本地可达 URL 的来源（读主面板解析结果；远程=隧道 URL，本地=null 回退原地址） */
-let getDisplayUrl: (() => string | null) | null = null;
+/** 本次会话捕获/提交的 DSH 启动网址（含一次性 token；供自动兑换与「浏览器打开/复制网址」使用） */
+let latestLaunchUrl: string | null = null;
+/** 用户浏览器可达地址解析器（activate 内装配；copyUrl/openExternal 命令使用） */
+let resolveUserDisplayUrlImpl: (() => Promise<string | null>) | null = null;
+/** 本地代办代理实例与就绪标志（activate 内装配；deactivate 时停止） */
+let authProxy: DshProxy | null = null;
+let authProxyStarted = false;
 
 /** 日志缓冲（供「复制日志」命令 dsh.copyLogs 使用；上限行数防内存膨胀） */
 const logBuffer: string[] = [];
@@ -297,6 +311,171 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   }
 
+  // —— DSH ≥0.1.2 鉴权适配（方案 A）：会话状态 + 本地代办代理 + 面板三态驱动 ——
+  // 会话状态机：'pending'（判定/兑换中）→ 'ok'（可进 iframe）/ 'needed'（外部服务需粘贴启动网址）。
+  // 自启场景全自动：子进程 stdout 捕获启动网址 → 自动兑换 → 用户无感；
+  // 外部启动场景：面板显示「需要登录」引导页，粘贴一次启动网址（30 天一次，见 authRequiredPage）。
+  let authSessionState: AuthUiState = 'pending';
+  let authBusy = false; // runAuthOnce 防并发
+  const panels: DshPanelProvider[] = [];
+
+  /** 会话存储适配：VS Code globalState（按 authority 分条，支持多 DSH 实例） */
+  const sessionStore: SessionStore = {
+    get: (key) => context.globalState.get<StoredSession>(key),
+    set: (key, value) => void context.globalState.update(key, value),
+    delete: (key) => void context.globalState.update(key, undefined),
+  };
+
+  /** 当前服务 authority（host:port；会话 cookie 与代理 Host 重写都以它为准） */
+  function serviceAuthority(): string {
+    const { host, port } = manager!.getTarget();
+    return `${host}:${port}`;
+  }
+
+  /** 让两个面板按最新状态重渲染（会话/代理变化时调用） */
+  function refreshPanels(): void {
+    for (const p of panels) p.refresh();
+  }
+
+  /**
+   * 确保本地代办代理已启动（幂等）。代理目标在每次请求时动态求值：
+   * 会话 cookie 直接读存储——服务重启（launch token 变化）不影响已签发 cookie（30 天密钥持久）。
+   */
+  function ensureProxyStarted(): void {
+    if (authProxyStarted || manager === null) return;
+    const proxy = createDshProxy({
+      getTarget: () => {
+        if (manager!.getSnapshot().state !== 'ready') return null;
+        const { host, port } = manager!.getTarget();
+        const session = getValidSession(`${host}:${port}`, { fetchImpl: fetch, store: sessionStore });
+        if (session === undefined) return null; // 无会话（不应发生：ready 且 authState=ok 时必有；兜底 503）
+        return { url: `http://${host}:${port}`, cookie: session.cookie };
+      },
+      log: (line) => appendLog(line),
+    });
+    authProxy = proxy;
+    void proxy.start().then(() => {
+      authProxyStarted = true;
+      appendLog(`[proxy] 本地代办就绪 http://127.0.0.1:${proxy.port}`);
+      refreshPanels();
+    });
+  }
+
+  /**
+   * 会话状态判定与（需要时）兑换，幂等（authBusy 防并发）：
+   * 1. 存储里有未过期会话 → ok；
+   * 2. 有启动网址且带 token（DSH ≥0.1.2）→ 兑换：成功 ok / 失败 needed（网址已随重启失效）；
+   * 3. 有启动网址但无 token（≤0.1.1 无鉴权）→ ok（不需要会话）；
+   * 4. 都没有（外部启动的 DSH）→ needed（面板显示登录引导页）。
+   */
+  async function runAuthOnce(): Promise<void> {
+    if (authBusy) return;
+    authBusy = true;
+    try {
+      const authority = serviceAuthority();
+      if (getValidSession(authority, { fetchImpl: fetch, store: sessionStore }) !== undefined) {
+        authSessionState = 'ok';
+        ensureProxyStarted();
+        refreshPanels();
+        return;
+      }
+      const launch = latestLaunchUrl;
+      if (launch !== null && parseLaunchTarget(launch) === null) {
+        // 旧版 dsh（≤0.1.1）：启动网址无 token，无鉴权，直接可用
+        appendLog('[auth] dsh 无浏览器鉴权（≤0.1.1），无需会话');
+        authSessionState = 'ok';
+      } else if (launch !== null) {
+        const r = await exchangeSession(launch, { fetchImpl: fetch, store: sessionStore });
+        if (r.status === 'ok') {
+          appendLog(`[auth] 会话兑换成功（${r.authority}，有效期至 ${new Date(r.expiresAt).toLocaleString()}）`);
+          authSessionState = 'ok';
+        } else if (r.status === 'no-auth') {
+          appendLog('[auth] dsh 无浏览器鉴权，无需会话');
+          authSessionState = 'ok';
+        } else {
+          appendLog(`[auth] 启动网址兑换失败：${r.reason}`);
+          authSessionState = 'needed'; // 网址已失效：面板引导用户粘贴最新启动网址
+        }
+      } else {
+        // 服务在运行但没有启动网址：外部启动的 DSH ≥0.1.2 → 面板显示登录引导
+        appendLog('[auth] DSH 服务在运行但扩展没有会话（由外部启动）：面板将显示登录引导');
+        authSessionState = 'needed';
+      }
+      ensureProxyStarted();
+      refreshPanels();
+    } finally {
+      authBusy = false;
+    }
+  }
+
+  /** 「需要登录」引导页提交的启动网址：校验 → 兑换 → 反馈 */
+  async function handleAuthUrlSubmit(rawUrl: string): Promise<void> {
+    try {
+      // 容错：用户可能粘贴整行（带 dsh web: 前缀/尾部文本），取第一个 http(s) 网址段
+      const m = /https?:\/\/[^\s]+/.exec(rawUrl);
+      if (m === null) {
+        void vscode.window.showErrorMessage(t('msg.authBadUrl'));
+        return;
+      }
+      const launch = m[0];
+      if (parseLaunchTarget(launch) === null) {
+        void vscode.window.showErrorMessage(t('msg.authBadUrl'));
+        return;
+      }
+      // host:port 必须与正在运行的服务一致（防止粘贴了另一台 DSH 的启动网址）
+      const target = serviceAuthority();
+      if (parseLaunchTarget(launch)!.authority !== target) {
+        void vscode.window.showWarningMessage(t('msg.authMismatch', { urlHost: parseLaunchTarget(launch)!.authority, targetHost: target }));
+        return;
+      }
+      const r = await exchangeSession(launch, { fetchImpl: fetch, store: sessionStore });
+      if (r.status === 'ok') {
+        appendLog(`[auth] 手动登录成功（${r.authority}，有效期至 ${new Date(r.expiresAt).toLocaleString()}）`);
+        latestLaunchUrl = launch;
+        authSessionState = 'ok';
+        ensureProxyStarted();
+        refreshPanels();
+        void vscode.window.showInformationMessage(t('msg.authOk'));
+      } else if (r.status === 'no-auth') {
+        latestLaunchUrl = launch;
+        authSessionState = 'ok';
+        ensureProxyStarted();
+        refreshPanels();
+      } else {
+        void vscode.window.showErrorMessage(t('msg.authRejected', { reason: r.reason }));
+        refreshPanels(); // 保持 needed 引导页，用户可重试
+      }
+    } catch (err) {
+      void vscode.window.showErrorMessage(t('msg.authRejected', { reason: String(err) }));
+    }
+  }
+
+  /** 面板 UI 接线（会话三态 + 代理地址覆盖 + 登录提交回调） */
+  const panelUi = (): PanelProviderUiOpts => ({
+    authState: () => authSessionState,
+    frameBaseOverride: () =>
+      authProxyStarted && authSessionState === 'ok' && manager?.getSnapshot().state === 'ready' ? (authProxy?.baseUrl ?? null) : null,
+    onAuthUrlSubmit: (url) => void handleAuthUrlSubmit(url),
+  });
+
+  /** 用户浏览器可打开的 DSH 地址：优先带 token 的启动网址（0.1.2 起浏览器需要它完成登录） */
+  async function resolveUserDisplayUrl(): Promise<string | null> {
+    const launch = latestLaunchUrl;
+    if (launch === null) return null;
+    const kind = classifyRemote(vscode.env.remoteName);
+    if (kind === 'wsl') return toLocalhostUrl(launch);
+    if (kind === 'tunneled') {
+      if (!readConfig().config.remoteEnabled) return launch;
+      try {
+        return await resolveExternalUrl(launch);
+      } catch {
+        return launch;
+      }
+    }
+    return launch;
+  }
+  resolveUserDisplayUrlImpl = resolveUserDisplayUrl;
+
   manager = new ServiceManager(toManagerOptions(config), {
     probeService,
     processRunner: createProcessRunner(),
@@ -304,6 +483,13 @@ export function activate(context: vscode.ExtensionContext): void {
     // 端口被占用自动临时替换成功：弹窗告知用户新端口（仅本次会话，配置未变）
     onPortFallback: (requested, fallback) => {
       void vscode.window.showInformationMessage(t('msg.portFallback', { port: requested, fallback }));
+    },
+    // 捕获子进程 stdout 打印的启动网址（dsh web: http://…/?token=…）→ 自动会话兑换
+    onLaunchUrl: (url) => {
+      latestLaunchUrl = url;
+      appendLog('[auth] 已捕获 DSH 启动网址（含登录 token），将自动完成登录');
+      if (manager?.getSnapshot().state === 'ready') void runAuthOnce();
+      // 未就绪：ready 的 onChange 里统一执行 runAuthOnce
     },
   });
   manager.setExitBehavior(!config.stopOnExit);
@@ -336,6 +522,7 @@ export function activate(context: vscode.ExtensionContext): void {
     remoteEnabledGetter, // remoteEnabled：dsh.remote.enabled 驱动远程隧道（开启后才接线）
     resolveExternalUrl, // resolveExternalUrl：远程窗口的 URL 隧道解析
     imageFallbackGetter, // imageFallback：dsh.image.fallback 驱动图片降级
+    panelUi(), // 会话三态 / 代理地址覆盖 / 登录提交（DSH ≥0.1.2 鉴权适配）
   );
   const panelSecondary = new DshPanelProvider(
     manager,
@@ -346,15 +533,16 @@ export function activate(context: vscode.ExtensionContext): void {
     remoteEnabledGetter,
     resolveExternalUrl,
     imageFallbackGetter,
+    panelUi(),
   );
-  // 复制网址命令读取主面板的展示 URL（远程=隧道本地 URL）
-  getDisplayUrl = () => panelPrimary.getDisplayUrl();
+  panels.push(panelPrimary, panelSecondary);
   new StatusBarController(manager);
 
-  // 服务就绪后启动握手超时（若面板已打开）
+  // 服务就绪后启动握手超时（若面板已打开）；并执行会话判定/兑换（自启自动、外部服务→登录引导页）
   manager.onChange((s) => {
     if (s.state === 'ready') {
       startHandshakeTimeout(); // 服务就绪：若面板已打开，启动握手超时
+      void runAuthOnce(); // 会话状态判定与自动兑换（幂等）
     }
   });
 
@@ -400,25 +588,26 @@ async function openPanel(): Promise<void> {
   await vscode.commands.executeCommand('dsh.panel.focus');
 }
 
-/** 在外部浏览器打开 DSH 页面 */
+/** 在外部浏览器打开 DSH 页面：DSH ≥0.1.2 时打开带一次性 token 的启动网址（浏览器首次访问完成登录） */
 async function openExternal(): Promise<void> {
   const s = manager?.getSnapshot();
   if (!s || s.state !== 'ready' || !s.url) {
     void vscode.window.showWarningMessage(t('info.notReady'));
     return;
   }
-  await vscode.env.openExternal(vscode.Uri.parse(s.url));
+  const userUrl = (await resolveUserDisplayUrlImpl?.()) ?? s.url;
+  await vscode.env.openExternal(vscode.Uri.parse(userUrl));
 }
 
-/** 复制 DSH 页面地址到剪贴板（远程窗口复制隧道本地 URL） */
+/** 复制 DSH 页面地址到剪贴板（优先带 token 的启动网址：外部浏览器打开即可完成登录） */
 async function copyUrl(): Promise<void> {
   const s = manager?.getSnapshot();
   if (!s || s.state !== 'ready' || !s.url) {
     void vscode.window.showWarningMessage(t('info.notReady'));
     return;
   }
-  // 远程窗口优先复制「已解析的本地隧道 URL」，用户直接可访问；本地回退原地址
-  const display = getDisplayUrl?.() ?? s.url;
+  // 用户浏览器可访问地址：带 token 启动网址（经远程分类解析）优先；旧版回退原地址
+  const display = (await resolveUserDisplayUrlImpl?.()) ?? s.url;
   await vscode.env.clipboard.writeText(display);
   void vscode.window.showInformationMessage(t('info.urlCopied', { url: display }));
 }
@@ -489,6 +678,15 @@ export async function deactivate(): Promise<void> {
     await cleanupAllImageCaches({ writeFile: async () => {}, rmFile: async (p) => { await nodeFs.unlink(p); } });
   } catch {
     // 清理失败不影响停用流程
+  }
+  // 停用本地代办代理（会话 cookie 保留在 globalState，下次激活继续有效）
+  if (authProxyStarted && authProxy !== null) {
+    try {
+      await authProxy.stop();
+    } catch {
+      // 停用清理失败不影响扩展退出
+    }
+    authProxyStarted = false;
   }
   const config = readConfig().config;
   if (config.stopOnExit) await manager?.stop();

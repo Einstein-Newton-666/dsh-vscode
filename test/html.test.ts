@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { initI18n, t } from '../src/i18n';
-import { loadingPage, errorPage, disconnectedPage, stoppedPage, readyPage, remoteDisabledPage, type PageCtx } from '../src/panel/html';
+import { loadingPage, errorPage, disconnectedPage, stoppedPage, readyPage, remoteDisabledPage, authRequiredPage, type PageCtx } from '../src/panel/html';
 
 function ctx(): PageCtx {
   return { nonce: 'abc123', cspSource: 'vscode-webview:', frameHosts: ['http://127.0.0.1:3080'] };
@@ -150,5 +150,24 @@ test('readyPage 握手脚本携带 imageFallback 开关（v0.3.0）', () => {
   // 未指定时默认 false（降级关闭）
   const html2 = readyPage('http://127.0.0.1:3080/', ctx(), { token: 'tok123', enabled: true });
   assert.ok(html2.includes('IMAGE_FALLBACK = false'));
+});
+
+test('authRequiredPage 需要登录引导页：说明 + 输入框 + 提交经 postMessage 交扩展（v0.4.0 鉴权适配）', () => {
+  initI18n('zh-cn');
+  const html = authRequiredPage(t, ctx());
+  assert.ok(html.includes(t('panel.authTitle')), '应显示标题');
+  assert.ok(html.includes(t('panel.authExplain')), '应显示原因说明');
+  assert.ok(html.includes('id="auth-url-input"'), '应有启动网址输入框');
+  assert.ok(html.includes('id="auth-submit"'), '应有登录按钮');
+  assert.ok(html.includes("type: 'authSubmitLaunchUrl'"), '提交应经 postMessage 发给扩展校验/兑换');
+  assert.ok(html.includes(t('panel.authPlaceholder')), '输入框应有示例占位文案');
+  assert.ok(!html.includes('dsh-frame'), '登录页不应包含 DSH iframe');
+});
+
+test('authRequiredPage 英文文案不缺失（en/zh 双语齐全）', () => {
+  initI18n('en');
+  const html = authRequiredPage(t, ctx());
+  assert.ok(html.includes('DSH requires browser sign-in'));
+  initI18n('zh-cn');
 });
 

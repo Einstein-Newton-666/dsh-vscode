@@ -23,7 +23,9 @@ export type PanelMessage =
   | { type: 'bridgeSaveImage'; requestId: string; name: string; dataB64: string; sessionCwd?: string }
   | { type: 'bridgeSaveImageAck'; requestId: string; ok: boolean; path?: string }
   | { type: 'bridgeDeleteImages'; requestId: string; paths: string[] }
-  | { type: 'bridgeDeleteImagesAck'; requestId: string; ok: boolean };
+  | { type: 'bridgeDeleteImagesAck'; requestId: string; ok: boolean }
+  /** 需要登录引导页：用户粘贴外部启动的 DSH 启动网址后提交（扩展校验并兑换会话） */
+  | { type: 'authSubmitLaunchUrl'; url: string };
 
 /** 渲染上下文 */
 export interface PageCtx {
@@ -276,6 +278,53 @@ export function remoteDisabledPage(t: T, ctx: PageCtx): string {
     '',
     '<div class="center"><p>' + t('panel.remoteDisabled') + '</p>' +
     '<button data-action="openSettings">' + t('panel.openSettings') + '</button></div>',
+  );
+}
+
+/**
+ * 需要登录占位页：DSH ≥0.1.2 带浏览器鉴权，扩展没有其会话 cookie 时展示。
+ * 覆盖「DSH 由扩展之外启动」的场景（扩展自启时会从子进程日志自动拿启动网址，
+ * 用户不会看到本页）；粘贴启动日志里的 `dsh web: …` 网址（30 天一次）即可完成登录。
+ * 输入框提交经 postMessage 交给扩展（扩展负责校验与兑换，不在页面内做任何逻辑）。
+ */
+export function authRequiredPage(t: T, ctx: PageCtx): string {
+  const inputScript = `
+const vscode = acquireVsCodeApi();
+const input = document.getElementById('auth-url-input');
+const hint = document.getElementById('auth-hint');
+const btn = document.getElementById('auth-submit');
+function submit() {
+  const url = (input && input.value || '').trim();
+  if (url === '') return;
+  btn.disabled = true;
+  if (hint) hint.textContent = ${JSON.stringify(t('panel.authSubmitting'))};
+  vscode.postMessage({ type: 'authSubmitLaunchUrl', url });
+}
+if (btn) btn.addEventListener('click', submit);
+if (input) {
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+  input.focus();
+}
+`;
+  return shell(
+    ctx,
+    t('panel.authTitle'),
+    '',
+    `<div class="center" style="max-width:420px;text-align:left">
+<p style="font-weight:600">${t('panel.authTitle')}</p>
+<p>${t('panel.authExplain')}</p>
+<ol style="margin:4px 0 12px;padding-left:20px;opacity:0.85">
+<li>${t('panel.authStep1')}</li>
+<li>${t('panel.authStep2')}</li>
+</ol>
+<input id="auth-url-input" type="text" spellcheck="false" style="width:100%;box-sizing:border-box;padding:6px 8px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border, transparent);border-radius:2px;font-family:var(--vscode-font-family)" placeholder="${escapeHtml(t('panel.authPlaceholder'))}">
+<p id="auth-hint" style="font-size:12px;opacity:0.75">${t('panel.authHint')}</p>
+<div style="text-align:center">
+<button id="auth-submit">${t('panel.authSubmit')}</button>
+<button data-action="showLogs">${t('panel.showLogs')}</button>
+</div>
+</div>
+<script nonce="${ctx.nonce}">${inputScript}</script>`,
   );
 }
 
