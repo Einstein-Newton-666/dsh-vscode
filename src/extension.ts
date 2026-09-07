@@ -11,7 +11,7 @@ import { ServiceManager, type ManagerOptions } from './service/manager';
 import { DshPanelProvider } from './panel/provider';
 import { StatusBarController } from './statusbar';
 import { resolveWorkspaceRoot } from './workspaceRoot';
-import { createUrlResolver } from './remote';
+import { createUrlResolver, handshakeTimeoutMs, bridgeEvalDelayMs } from './remote';
 import {
   installBridge,
   uninstallBridge,
@@ -44,10 +44,6 @@ function appendLog(line: string): void {
 
 /** globalState 键：用户点击「不再提示」后置 true，持久静默桥接降级警告 */
 const BRIDGE_SILENCE_KEY = 'dsh.bridgeWarningSilenced';
-/** 握手超时（毫秒）：面板打开且服务就绪后，此时间内无任何 bridgeAck 视为握手失败 */
-const HANDSHAKE_TIMEOUT_MS = 3000;
-/** 激活后评估桥接状态的延迟（毫秒）：略大于握手超时，给握手回执留出时间 */
-const BRIDGE_EVAL_DELAY_MS = 3500;
 
 /** DshConfig → ManagerOptions（探测 3s、轮询 0.5s，与规格一致） */
 function toManagerOptions(config: DshConfig): ManagerOptions {
@@ -195,6 +191,9 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   }
 
+  /** 本次会话的握手超时（毫秒）：按远程分类动态取值（tunneled 15s / local·wsl 5s） */
+  const handshakeTimeout = handshakeTimeoutMs(vscode.env.remoteName);
+
   /**
    * 启动握手超时（幂等）：面板已打开且服务已就绪、且尚未回执时，3 秒内无 bridgeAck 视为失败。
    * 服务未就绪时没有 iframe、握手不可能发生，因此不在此刻启动定时器，
@@ -207,13 +206,13 @@ export function activate(context: vscode.ExtensionContext): void {
     if (manager?.getSnapshot().state !== 'ready') return;
     handshakeTimer = setTimeout(() => {
       handshakeTimer = undefined;
-      // 3 秒内无任何 bridgeAck → 判定握手失败（degraded）
+      // 超时窗内无任何 bridgeAck → 判定握手失败（degraded）；窗口按远程分类放宽（见 handshakeTimeoutMs）
       if (handshakeOk === undefined) {
         appendLog('[bridge] handshake timeout');
         handshakeOk = false;
         evaluateAndWarn(); // 握手刚失败，立即评估（不必再等固定延迟）
       }
-    }, HANDSHAKE_TIMEOUT_MS);
+    }, handshakeTimeout);
   }
 
   /** 面板握手回执回调（两个面板共享）：记录结果并取消超时（握手已发生，无论成败） */
@@ -262,7 +261,7 @@ export function activate(context: vscode.ExtensionContext): void {
     evalTimer = setTimeout(() => {
       evalTimer = undefined;
       evaluateAndWarn();
-    }, BRIDGE_EVAL_DELAY_MS);
+    }, bridgeEvalDelayMs(vscode.env.remoteName));
   }
 
   /** 重试安装桥接（命令 dsh.bridge.retry 与警告「重试安装」按钮共用） */

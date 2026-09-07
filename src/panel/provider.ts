@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import * as nodeFs from 'node:fs/promises';
 import { ServiceManager } from '../service/manager';
 import { handleBridgeMessage } from '../bridge/host';
-import { isRemoteName } from '../remote';
+import { classifyRemote, toLocalhostUrl, type RemoteKind } from '../remote';
 import { t } from '../i18n';
 import {
   loadingPage,
@@ -74,11 +74,19 @@ export class DshPanelProvider implements vscode.WebviewViewProvider {
   }
 
   /**
-   * 当前窗口是否处于「远程但未启用」状态：远程窗口（remoteName 非空）且 dsh.remote.enabled=false。
+   * 当前窗口是否处于「远程隧道但未启用」状态：仅 SSH Remote/容器等需要隧道的远程窗口
+   * （remoteKind='tunneled'）且 dsh.remote.enabled=false 时成立。
+   * WSL（issue #13-3）不是隧道远程：vscode-server/dsh 同在一台 WSL 内、靠 localhost 转发直连，
+   * 不需要（也不支持）asExternalUri——WSL 窗口与本地窗口同样默认可用，不拦。
    * 该状态下不拉起远端服务、不建隧道，仅展示引导占位页。
    */
   private remoteWindowDisabled(): boolean {
-    return isRemoteName(vscode.env.remoteName) && !this.remoteEnabled();
+    return this.remoteKind() === 'tunneled' && !this.remoteEnabled();
+  }
+
+  /** 当前窗口的远程分类（local / wsl / tunneled） */
+  private remoteKind(): RemoteKind {
+    return classifyRemote(vscode.env.remoteName);
   }
 
   /** 当前展示用的本地可达 URL（供「复制网址」命令使用；未解析时返回 null 由调用方回退原 URL） */
@@ -203,17 +211,29 @@ export class DshPanelProvider implements vscode.WebviewViewProvider {
   }
 
   /**
-   * 状态变化处理：远程且启用时异步解析隧道 URL（防乱序后落地），
-   * 其余情况直接渲染（远程未启用会由 render 短路为占位页）。
+   * 状态变化处理：按远程分类异步解析「面板 iframe 实际加载的地址」：
+   * - tunneled（SSH Remote/容器）且已启用：经 asExternalUri 建隧道，返回本地可达 URL；
+   * - wsl：不需要隧道——把回环 host 替换为 localhost（Windows→WSL 的 localhost 转发，
+   *   也绕开 webview SW 对 127.0.0.1 iframe 的 origin 重写，见 issue #13-1/3）；
+   * - 其余情况（local / tunneled 未启用）保持原地址。
+   * 解析结果异步落地前用渲染代数防乱序覆盖。
    */
   private async handleStateChange(): Promise<void> {
     const s = this.manager.getSnapshot();
-    if (s.state === 'ready' && isRemoteName(vscode.env.remoteName) && this.remoteEnabled()) {
-      const gen = ++this.renderGen;
+    const kind = this.remoteKind();
+    if (s.state === 'ready' && kind !== 'local') {
       const raw = s.url ?? this.rawUrl();
-      const resolved = await this.resolveExternalUrl(raw);
-      if (gen !== this.renderGen) return; // 期间状态又变，丢弃过期结果
-      this.pendingExternalUrl = resolved;
+      if (kind === 'tunneled' && this.remoteEnabled()) {
+        const gen = ++this.renderGen;
+        const resolved = await this.resolveExternalUrl(raw);
+        if (gen !== this.renderGen) return; // 期间状态又变，丢弃过期结果
+        this.pendingExternalUrl = resolved;
+      } else if (kind === 'wsl') {
+        // WSL 不需要（也不支持）asExternalUri 隧道：localhost 直连变体即本地可达地址
+        this.pendingExternalUrl = toLocalhostUrl(raw);
+      } else {
+        this.pendingExternalUrl = null; // tunneled 未启用：占位页兜底，不设解析地址
+      }
     } else {
       ++this.renderGen; // 使进行中的解析过期
       this.pendingExternalUrl = null;
@@ -243,14 +263,13 @@ export class DshPanelProvider implements vscode.WebviewViewProvider {
       switch (s.state) {
         case 'ready':
           this.wasConnected = true;
-          // iframe/CSP 使用解析后的本地可达 URL（远程=隧道；本地=原地址）。
-          // frameHosts 以解析出的 origin 为准，保证 CSP 放行该隧道地址。
+          // iframe 与 CSP 必须同源：先定最终加载地址（解析后的本地可达 URL），
+          // 再由它推导 frameHosts——杜绝「iframe src 已换 localhost/隧道地址、CSP 仍放行
+          // 旧地址」的不同步白屏（issue #13-2：frameHosts 原先有两处互相覆盖的构造）。
           {
-            const displayUrl = this.pendingExternalUrl ?? s.url ?? this.rawUrl();
-            if (this.pendingExternalUrl !== null) {
-              ctx.frameHosts = [new URL(this.pendingExternalUrl).origin];
-            }
-            html = readyPage(displayUrl, ctx, {
+            const frameUrl = this.pendingExternalUrl ?? s.url ?? this.rawUrl();
+            ctx.frameHosts = [new URL(frameUrl).origin];
+            html = readyPage(frameUrl, ctx, {
               token: this.bridgeToken,
               enabled: this.bridgeEnabled(), // 由 dsh.bridge.enabled 配置驱动（Task 7 接入）
               imageFallback: this.imageFallback(), // v0.3.0：降级开关随握手消息带给桥接客户端

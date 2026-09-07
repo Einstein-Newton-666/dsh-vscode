@@ -54,11 +54,47 @@ test('readyPage 启用桥接时注入握手脚本', () => {
 
 test('readyPage 握手脚本包含上行 bridgeHello 发送', () => {
   const html = readyPage('http://127.0.0.1:3080/', ctx(), { token: 'tok123', enabled: true });
-  // iframe load 后向 iframe 发送 bridgeHello 握手消息（携带 token）
-  assert.ok(html.includes("kind: 'bridgeHello'"), 'load 后应发送 bridgeHello');
+  // 脚本执行即向 iframe 发送 bridgeHello 握手消息（携带 token）
+  assert.ok(html.includes("kind: 'bridgeHello'"), '应发送 bridgeHello');
   assert.ok(html.includes('token: TOKEN'), '握手消息应携带 token');
   // 不应再包含下行 syncWorkspace 转发逻辑（工作区同步已移除）
   assert.ok(!html.includes('syncWorkspace'), '脚本不应包含 syncWorkspace 下行转发');
+});
+
+test('readyPage 握手脚本：hello 循环不依赖 iframe load 事件（issue #13-4：快加载会错过事件）', () => {
+  const html = readyPage('http://127.0.0.1:3080/', ctx(), { token: 'tok123', enabled: true });
+  const scriptStart = html.indexOf('dsh-bridge-handshake');
+  const script = html.slice(scriptStart);
+  // 不再通过 iframeEl.addEventListener('load', …) 启动 hello（事件可能在脚本注册前已过）
+  assert.ok(!/iframeEl\.addEventListener\('load'/.test(script), 'hello 不得挂在 load 事件上');
+  // 脚本执行即发送：sendHello() 立即调用（无 load 包裹）
+  assert.ok(/sendHello\(\);\s*\n\s*const helloRetry/.test(script), '脚本执行即启动 hello 重试循环');
+  // 收到 bridgeAck 前每 250ms 重发，最长 15 秒（60 次），覆盖 remote/慢 boot
+  assert.ok(script.includes('helloAttempts > 60'), '重试上限应覆盖 15 秒');
+  assert.ok(script.includes('bridgeAcked || helloAttempts > 60'), '收到回执应停止重试');
+});
+
+test('readyPage 握手脚本：下行 postMessage 使用 targetOrigin *（issue #13-1：SW 重写 origin 会让具名 origin 抛错）', () => {
+  const html = readyPage('http://127.0.0.1:3080/', ctx(), { token: 'tok123', enabled: true });
+  // hello 与四类回执转发（copyTextAck/readTextAck/saveImageAck/deleteImagesAck）共 5 处下行
+  const countStar = html.split(", '*')").length - 1;
+  assert.ok(countStar >= 5, `下行 postMessage 应全部为 *，实际 ${countStar} 处`);
+  assert.ok(
+    html.includes("postMessage({ kind: 'bridgeHello', token: TOKEN, imageFallback: IMAGE_FALLBACK }, '*')"),
+    'hello 应带 imageFallback 且 targetOrigin 为 *',
+  );
+  // 回归防线：绝不能再以 iframeSrc 推导的 origin 作 targetOrigin（SW 重写下 postMessage 抛错）
+  assert.ok(!html.includes('}, iframeSrc)'), '不得再以 iframeSrc 为 targetOrigin');
+});
+
+test('readyPage 握手脚本：上行来源校验兼容 SW 重写与 loopback 互换（source 仍必查）', () => {
+  const html = readyPage('http://127.0.0.1:3080/', ctx(), { token: 'tok123', enabled: true });
+  assert.ok(html.includes("e.source !== iframeEl.contentWindow || !isAllowedBridgeOrigin(e.origin)"),
+    '上行必须同时校验 source 与来源 origin');
+  assert.ok(html.includes("o.startsWith('vscode-webview://')"), '应放行 webview SW 重写后的载体 origin');
+  assert.ok(html.includes('isAllowedBridgeOrigin'), '应存在来源判定函数');
+  // 不再以「与 iframe.src 推导 origin 严格相等」作为唯一放行条件
+  assert.ok(!html.includes('e.origin !== ALLOWED_ORIGIN || e.source'), '旧的严格相等校验应被替换');
 });
 
 test('readyPage 握手脚本包含剪贴板桥接的上下行转发', () => {

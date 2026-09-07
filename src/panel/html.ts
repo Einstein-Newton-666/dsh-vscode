@@ -76,7 +76,9 @@ document.addEventListener('click', (e) => {
  *    并把 iframe 上行消息（openExternal / openFile / copyText）转发给扩展侧处理；
  *  - 下行：把扩展侧的剪贴板回执 { type:'bridgeCopyTextAck' } 转发回 iframe，
  *    供 DSH 页面内的 writeText Promise 收尾（VS Code 会拦截跨源 iframe 的原生剪贴板 API）。
- * 安全约束：上行仅接收「目标 origin」且「source 为 iframe 内容窗口」的消息，防止其它站点伪造。
+ * 安全约束：上行仅接收「目标 iframe 内容窗口」且「来源 origin 属于本页面加载的 DSH 服务」
+ * 的消息，防止其它站点伪造（详情见 isAllowedBridgeOrigin 注释——webview 的 service worker
+ * 可能重写 iframe 真实 origin，故不能只用 src 推导的 origin 一刀切拒绝）。
  * @param token 握手防伪凭据（与桥接侧 isBridgeMessage 校验的一致）
  * @param allowedOrigin 允许的消息来源 origin（由 DSH 页面地址推导，如 http://127.0.0.1:3080）
  */
@@ -85,17 +87,37 @@ function bridgeHandshakeScript(token: string, allowedOrigin: string, imageFallba
 // dsh-bridge-handshake：DSH 页面桥接握手与消息路由（上行转发 + 剪贴板回执下行转发）
 const iframeEl = document.getElementById('dsh-frame');
 if (iframeEl) {
-  const iframeSrc = iframeEl.src;
   // 握手 token 与允许的 DSH 页面 origin
   const TOKEN = ${JSON.stringify(token)};
   const ALLOWED_ORIGIN = ${JSON.stringify(allowedOrigin)};
   const IMAGE_FALLBACK = ${JSON.stringify(imageFallback)}; // v0.3.0：非视觉模型图片降级开关
   let bridgeAcked = false;
+  // 发送目标判定：DSH 页面装在 vscode-webview 的 service worker 里，若它重写了 iframe 的
+  // 真实 origin（remote 实测 e.origin 回流为 vscode-webview://<uuid>），用 iframe.src 推导的
+  // origin 作 targetOrigin 会让 postMessage 直接抛错（61 次 hello 一条都发不出去，见 issue #13）。
+  // 因此下行一律 '*'：接收窗口已用 iframeEl.contentWindow 锁定，hello 自身带 token 防伪，
+  // 恶意页面拿不到 token 不会回 ack；上行则保留来源校验（见 isAllowedBridgeOrigin）。
+  // 顺带兼容「host 从 127.0.0.1 换成 localhost」等 loopback 等价变体。
+  function isAllowedBridgeOrigin(o) {
+    if (typeof o !== 'string') return false;
+    if (o === ALLOWED_ORIGIN) return true;
+    // webview SW 重写后的载体 origin（remote 场景实测；source 已限定为本 iframe，可接受）
+    if (o.startsWith('vscode-webview://')) return true;
+    // 127.0.0.1 / localhost 同端口互换（隧道/WSL 场景 host 替换后 src 与回流 origin 可能不同）
+    try {
+      const a = new URL(ALLOWED_ORIGIN);
+      const b = new URL(o);
+      const loopback = (h) => h === '127.0.0.1' || h === 'localhost' || h === '::1';
+      return loopback(a.hostname) && loopback(b.hostname) && a.port === b.port;
+    } catch {
+      return false;
+    }
+  }
   window.addEventListener('message', (e) => {
     const d = e.data;
     // —— 下行：扩展宿主回执（vscode.webview.postMessage 投递），转发给 iframe ——
     if (d && d.type === 'bridgeCopyTextAck' && typeof d.requestId === 'string' && typeof d.ok === 'boolean') {
-      iframeEl.contentWindow.postMessage({ kind: 'copyTextAck', requestId: d.requestId, ok: d.ok }, iframeSrc);
+      iframeEl.contentWindow.postMessage({ kind: 'copyTextAck', requestId: d.requestId, ok: d.ok }, '*');
       return;
     }
     // 剪贴板读取回执：转发给 iframe，供其 resolve 粘贴兜底的 readText Promise
@@ -105,7 +127,7 @@ if (iframeEl) {
         requestId: d.requestId,
         ok: d.ok,
         text: typeof d.text === 'string' ? d.text : undefined,
-      }, iframeSrc);
+      }, '*');
       return;
     }
     // 保存图片回执：转发给 iframe，resolve 其 saveImage Promise（ok + 落盘绝对路径）
@@ -115,16 +137,16 @@ if (iframeEl) {
         requestId: d.requestId,
         ok: d.ok,
         ...(typeof d.path === 'string' ? { path: d.path } : {}),
-      }, iframeSrc);
+      }, '*');
       return;
     }
     // 删除图片回执：转发给 iframe，resolve 其 deleteImages Promise
     if (d && d.type === 'bridgeDeleteImagesAck' && typeof d.requestId === 'string' && typeof d.ok === 'boolean') {
-      iframeEl.contentWindow.postMessage({ kind: 'deleteImagesAck', requestId: d.requestId, ok: d.ok }, iframeSrc);
+      iframeEl.contentWindow.postMessage({ kind: 'deleteImagesAck', requestId: d.requestId, ok: d.ok }, '*');
       return;
     }
-    // —— 上行：iframe 发来的消息，origin + source 双重校验 ——
-    if (e.origin !== ALLOWED_ORIGIN || e.source !== iframeEl.contentWindow) return;
+    // —— 上行：iframe 发来的消息，source + origin 双重校验 ——
+    if (e.source !== iframeEl.contentWindow || !isAllowedBridgeOrigin(e.origin)) return;
     // 握手回执：统一形状 { kind:'bridgeAck', ok }（不带 token 字段），只读 ok
     if (d && d.kind === 'bridgeAck') {
       bridgeAcked = true;
@@ -168,23 +190,23 @@ if (iframeEl) {
       vscode.postMessage({ type: 'bridgeReadText', requestId: d.requestId });
     }
   });
-  // iframe 加载完成后下发握手消息（携带 token）。
-  // DSH 的 client 插件 factory 可能在 load 之后才 materialize，握手消息会丢失，
-  // 因此收到 bridgeAck 前每 250ms 重发一次，最多重试 3 秒。
-  iframeEl.addEventListener('load', () => {
-    let helloAttempts = 0;
-    const sendHello = () => {
-      if (!bridgeAcked && iframeEl.contentWindow) {
-        iframeEl.contentWindow.postMessage({ kind: 'bridgeHello', token: TOKEN, imageFallback: IMAGE_FALLBACK }, iframeSrc);
-      }
-    };
+  // 下发握手消息（携带 token）。不挂在 iframe 的 load 事件上：webview 里 iframe（本机直连）
+  // 毫秒级完成加载，脚本在 body 尾部才注册监听，事件早已错过——hello 循环永远不启动
+  // （issue #13-4 实测）。改为脚本执行即启动：DSH 的 client 插件 factory 可能在页面
+  // 加载后才 materialize（实测 1.5~3s），收到 bridgeAck 前每 250ms 重发一次，
+  // 最长 15 秒（覆盖 remote/慢 boot 场景），收到回执立即停止。
+  let helloAttempts = 0;
+  const sendHello = () => {
+    if (!bridgeAcked && iframeEl.contentWindow) {
+      iframeEl.contentWindow.postMessage({ kind: 'bridgeHello', token: TOKEN, imageFallback: IMAGE_FALLBACK }, '*');
+    }
+  };
+  sendHello();
+  const helloRetry = setInterval(() => {
+    helloAttempts += 1;
+    if (bridgeAcked || helloAttempts > 60) { clearInterval(helloRetry); return; }
     sendHello();
-    const helloRetry = setInterval(() => {
-      helloAttempts += 1;
-      if (bridgeAcked || helloAttempts > 12) { clearInterval(helloRetry); return; }
-      sendHello();
-    }, 250);
-  });
+  }, 250);
 }`;
 }
 
