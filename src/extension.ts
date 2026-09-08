@@ -317,6 +317,9 @@ export function activate(context: vscode.ExtensionContext): void {
   // 外部启动场景：面板显示「需要登录」引导页，粘贴一次启动网址（30 天一次，见 authRequiredPage）。
   let authSessionState: AuthUiState = 'pending';
   let authBusy = false; // runAuthOnce 防并发
+  /** 启动网址宽限已用标记：服务 HTTP 就绪早于 stdout 打印启动网址（dsh 在插件 boot 后才 announce），
+   * 首次无网址时先 pending 等待 URL 到达，宽限后再无网址才判定为「外部启动」（避免 needed 闪现） */
+  let launchGraceUsed = false;
   const panels: DshPanelProvider[] = [];
 
   /** 会话存储适配：VS Code globalState（按 authority 分条，支持多 DSH 实例） */
@@ -401,16 +404,29 @@ export function activate(context: vscode.ExtensionContext): void {
           authSessionState = 'needed'; // 网址已失效：面板引导用户粘贴最新启动网址
         }
       } else {
-        // 服务在运行但没有启动网址：外部启动的 DSH ≥0.1.2 → 面板显示登录引导
+        if (!launchGraceUsed) {
+          // stdout 的启动网址可能晚于 HTTP 就绪到达（dsh 全量插件 boot 后才 announce）：
+          // 先保持 pending，宽限 2.5s 后重判——期间 URL 到达则自动兑换，仍未到才是外部启动
+          launchGraceUsed = true;
+          appendLog('[auth] 服务已就绪但启动网址尚未到达，等待 2.5s 后重判…');
+          setTimeout(() => void runAuthOnce(), 2500);
+          refreshPanels();
+          return;
+        }
+        // 服务在运行且宽限已过仍无启动网址：外部启动的 DSH ≥0.1.2 → 面板显示登录引导
         appendLog('[auth] DSH 服务在运行但扩展没有会话（由外部启动）：面板将显示登录引导');
         authSessionState = 'needed';
       }
       ensureProxyStarted();
       refreshPanels();
     } catch (err) {
-      // 兑换的网络级异常（瞬时断连等）：不能把面板卡在 pending，记日志后延时重试
+      // 兑换的网络级异常（瞬时断连等）：不能把面板卡在 pending；仅当服务仍就绪时延时重试
       appendLog(`[auth] 会话判定异常（3 秒后自动重试）: ${String(err)}`);
-      setTimeout(() => void runAuthOnce(), 3000);
+      if (manager?.getSnapshot().state === 'ready') {
+        setTimeout(() => void runAuthOnce(), 3000);
+      } else {
+        refreshPanels(); // 服务已不在 ready：状态页由 manager 驱动，ready 时 onChange 会重触发
+      }
     } finally {
       authBusy = false;
     }
@@ -549,6 +565,7 @@ export function activate(context: vscode.ExtensionContext): void {
   // 服务就绪后启动握手超时（若面板已打开）；并执行会话判定/兑换（自启自动、外部服务→登录引导页）
   manager.onChange((s) => {
     if (s.state === 'ready') {
+      launchGraceUsed = false; // 新一轮服务：重置「启动网址宽限」，重新等待本轮 stdout URL
       startHandshakeTimeout(); // 服务就绪：若面板已打开，启动握手超时
       void runAuthOnce(); // 会话状态判定与自动兑换（幂等）
     }
