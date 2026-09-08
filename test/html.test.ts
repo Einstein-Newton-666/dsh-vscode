@@ -171,3 +171,24 @@ test('authRequiredPage 英文文案不缺失（en/zh 双语齐全）', () => {
   initI18n('zh-cn');
 });
 
+test('每个占位页 acquireVsCodeApi 恰好声明一次（顶层 const 重复声明会使页面脚本整体失效）', () => {
+  const pages = [
+    loadingPage(t, ctx()),
+    errorPage(t, ctx(), 'x'),
+    disconnectedPage(t, ctx()),
+    stoppedPage(t, ctx()),
+    remoteDisabledPage(t, ctx()),
+    readyPage('http://127.0.0.1:3080/', ctx(), { token: 't', enabled: true }),
+  ];
+  initI18n('zh-cn');
+  pages.push(authRequiredPage(t, ctx()));
+  initI18n('en');
+  pages.push(authRequiredPage(t, ctx()));
+  for (const html of pages) {
+    const count = html.split('acquireVsCodeApi()').length - 1;
+    assert.equal(count, 1, `每个页面应恰好声明一次 acquireVsCodeApi（实际 ${count} 次）`);
+    const decl = html.split("const vscode = acquireVsCodeApi();").length - 1;
+    assert.equal(decl, 1, `顶层 const vscode 声明应恰好一次（实际 ${decl} 次）`);
+  }
+});
+

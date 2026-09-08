@@ -358,6 +358,10 @@ export function activate(context: vscode.ExtensionContext): void {
       authProxyStarted = true;
       appendLog(`[proxy] 本地代办就绪 http://127.0.0.1:${proxy.port}`);
       refreshPanels();
+    }).catch((err) => {
+      // 代理启动失败（端口被占等罕见）：记日志并复位，下次会话判定/兑换时重试
+      authProxy = null;
+      appendLog(`[proxy] 本地代办启动失败: ${String(err)}`);
     });
   }
 
@@ -403,6 +407,10 @@ export function activate(context: vscode.ExtensionContext): void {
       }
       ensureProxyStarted();
       refreshPanels();
+    } catch (err) {
+      // 兑换的网络级异常（瞬时断连等）：不能把面板卡在 pending，记日志后延时重试
+      appendLog(`[auth] 会话判定异常（3 秒后自动重试）: ${String(err)}`);
+      setTimeout(() => void runAuthOnce(), 3000);
     } finally {
       authBusy = false;
     }

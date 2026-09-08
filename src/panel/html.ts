@@ -289,7 +289,8 @@ export function remoteDisabledPage(t: T, ctx: PageCtx): string {
  */
 export function authRequiredPage(t: T, ctx: PageCtx): string {
   const inputScript = `
-const vscode = acquireVsCodeApi();
+// 注意：不得再次声明 vscode 实例——公共段（BUTTON_SCRIPT）已声明过它，
+// 顶层重复声明会抛 SyntaxError 使本脚本整体失效；这里直接复用外层 vscode。
 const input = document.getElementById('auth-url-input');
 const hint = document.getElementById('auth-hint');
 const btn = document.getElementById('auth-submit');
