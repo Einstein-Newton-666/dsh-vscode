@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
-import { existsSync, writeFileSync } from 'node:fs';
+import { rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { spawnSync } from 'node:child_process';
@@ -39,7 +39,8 @@ function dshHomeWritable(): boolean {
   try {
     const probeFile = join(home, `.integ-probe-${process.pid}`);
     writeFileSync(probeFile, 'x');
-    return existsSync(probeFile);
+    rmSync(probeFile, { force: true }); // 探测即删，不残留
+    return true;
   } catch {
     return false;
   }

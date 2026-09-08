@@ -10,7 +10,7 @@ import { probeService } from '../../src/service/detect';
 import { parseLaunchUrlLine } from '../../src/service/launchUrl';
 import { exchangeSession, getValidSession, probeSession, type SessionStore, type StoredSession } from '../../src/service/session';
 import { createDshProxy } from '../../src/service/proxy';
-import { existsSync, writeFileSync } from 'node:fs';
+import { rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 /** 取一个当前空闲的随机端口 */
@@ -41,7 +41,8 @@ function usable(): boolean {
   try {
     const probeFile = join(home, `.auth-probe-${process.pid}`);
     writeFileSync(probeFile, 'x');
-    return existsSync(probeFile);
+    rmSync(probeFile, { force: true }); // 探测即删，不残留
+    return true;
   } catch {
     return false;
   }
