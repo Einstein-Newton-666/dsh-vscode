@@ -79,6 +79,10 @@ export function buildUpstreamRequest(
   }
   // Host 必须与 cookie 绑定的 authority 一致（服务端按 Host 校验），cookie 用会话记录覆盖
   headers.host = u.host;
+  // Origin 也必须重写为上游 origin：页面从代理端口加载，浏览器对同源 POST 必带
+  // Origin=<代理端口>，上游 CSRF 校验要求 Origin 等于自身 origin，原样透传会 403
+  // （GET 不带 Origin，故只有 API 调用失败、页面本身正常）。
+  if (headers.origin !== undefined) headers.origin = u.origin;
   if (target.cookie !== undefined && target.cookie !== '') headers.cookie = target.cookie;
   return {
     hostname: u.hostname,
@@ -158,6 +162,8 @@ export function createDshProxy(deps: DshProxyDeps): DshProxy {
       headers[lower] = value;
     }
     if (req.headers.upgrade !== undefined) headers.upgrade = String(req.headers.upgrade);
+    // 同 buildUpstreamRequest：Origin 重写为上游 origin，避免上游 CSRF 校验 403
+    if (headers.origin !== undefined) headers.origin = u.origin;
     if (target.cookie !== undefined && target.cookie !== '') headers.cookie = target.cookie;
     const upReq = http.request({
       hostname: u.hostname,

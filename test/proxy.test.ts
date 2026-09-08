@@ -63,6 +63,32 @@ test('转发：Host 重写为上游、注入会话 cookie，路径/查询/方法
   }
 });
 
+test('转发：Origin 重写为上游 origin（页面从代办端口加载，POST 的 Origin 是代办端口，上游 CSRF 校验会 403）', async () => {
+  const up = await serveUpstream((req, res) => {
+    res.writeHead(200, { 'content-type': 'text/plain' });
+    res.end(`origin=${req.headers.origin ?? ''}`);
+  });
+  const target = { url: `http://127.0.0.1:${up.port}`, cookie: 'dsh-auth-x=v1' };
+  const { proxy, base } = await startProxy(() => target);
+  try {
+    const proxyOrigin = base.replace(/\/$/, '');
+    const res = await fetch(`${base}api/settings/describe`, {
+      method: 'POST',
+      headers: { origin: proxyOrigin, 'content-type': 'application/json' },
+      body: '{}',
+    });
+    const body = await res.text();
+    assert.equal(res.status, 200);
+    assert.ok(
+      body.includes(`origin=http://127.0.0.1:${up.port}`),
+      `Origin 应重写为上游 origin（而非代办端口 ${proxyOrigin}）：${body}`,
+    );
+  } finally {
+    await proxy.stop();
+    closeUp(up);
+  }
+});
+
 test('无会话 cookie 的目标：不注入 Cookie 头', async () => {
   const up = await serveUpstream((_req, res) => {
     res.writeHead(200);
