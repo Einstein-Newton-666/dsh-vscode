@@ -313,9 +313,10 @@ export class ServiceManager {
     });
     child.stdout?.on('data', (chunk) => {
       const text = chunk.toString();
-      this.deps.log(`[stdout] ${text.trimEnd()}`);
+      // 日志打码：启动网址行含一次性登录 token，输出通道不做可复制凭据残留
+      this.deps.log(`[stdout] ${text.replace(/([?&]token=)[A-Za-z0-9_-]+/g, '$1***').trimEnd()}`);
       // 行级解析启动网址（0.1.2 打印 `dsh web: http://127.0.0.1:<port>/?token=<43字符>`），
-      // 供扩展兑换浏览器会话 cookie；日志原文已含该行（含 token，输出通道仅用户可见）。
+      // 供扩展兑换浏览器会话 cookie（解析用原文，打码只作用于日志文本）。
       this.stdoutPartial += text;
       const lines = this.stdoutPartial.split('\n');
       this.stdoutPartial = lines.pop() ?? '';

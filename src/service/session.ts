@@ -114,7 +114,8 @@ export async function exchangeSession(
 ): Promise<ExchangeResult> {
   const target = parseLaunchTarget(launchUrl);
   if (target === null) {
-    return { status: 'rejected', authority: '(unknown)', reason: `启动网址无法解析: ${launchUrl}` };
+    // 不回显原文：启动网址含一次性 token，避免经错误提示/日志扩散
+    return { status: 'rejected', authority: '(unknown)', reason: '启动网址无法解析（缺少有效的 token 参数）' };
   }
   const now = deps.now?.() ?? Date.now();
   const res = await deps.fetchImpl(launchUrl, { redirect: 'manual' });

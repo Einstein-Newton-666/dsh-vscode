@@ -545,5 +545,21 @@ test('stdout 网址端口与当前目标端口不一致（如残留旧端口输�
   h.manager.dispose();
 });
 
+test('stdout 日志打码 token（日志零明文），onLaunchUrl 回调仍收原文', async () => {
+  const logs: string[] = [];
+  const launchUrls: string[] = [];
+  const h = makeHarness(undefined, { log: (l) => logs.push(l), onLaunchUrl: (u) => launchUrls.push(u) });
+  h.probeQueue = ['foreign', 'down', 'dsh'];
+  const done = h.manager.ensureRunning();
+  await waitFor(() => h.child !== null);
+  h.child!.emitStdout('dsh web: http://127.0.0.1:3081/?token=SECRETTOKEN0123456789 (LAN: http://192.168.1.5:3081/?token=SECRETTOKEN0123456789)\n');
+  const s = await done;
+  assert.equal(s.state, 'ready');
+  assert.equal(launchUrls.length, 1);
+  assert.ok(launchUrls[0].includes('token=SECRETTOKEN0123456789'), '解析回调必须使用原文 token');
+  assert.ok(!logs.some((l) => l.includes('SECRETTOKEN0123456789')), '输出日志不得出现明文 token');
+  h.manager.dispose();
+});
+
 
 
