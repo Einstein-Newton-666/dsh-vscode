@@ -16,6 +16,7 @@ import { createDshProxy, type DshProxy } from './service/proxy';
 import {
   exchangeSession,
   getValidSession,
+  dropSession,
   parseLaunchTarget,
   type SessionStore,
   type StoredSession,
@@ -342,7 +343,12 @@ export function activate(context: vscode.ExtensionContext): void {
 
   /**
    * 确保本地代办代理已启动（幂等）。代理目标在每次请求时动态求值：
-   * 会话 cookie 直接读存储——服务重启（launch token 变化）不影响已签发 cookie（30 天密钥持久）。
+   * - 服务未就绪 → null（代理回 503，页面状态由 manager 驱动）；
+   * - 服务就绪且有会话 → 带 cookie 转发（DSH ≥0.1.2）；
+   * - 服务就绪但无会话（旧版 ≤0.1.1 无鉴权 / 会话意外丢失）→ 直通转发（不注入 cookie）。
+   *   注意：旧版回归防线——无鉴权服务若走 503 会让整个面板不可用（此前直接内嵌可用），
+   *   因此「无会话」绝不能 503，只能直通；0.1.2 场景若 cookie 丢失，代理会收到 401
+   *   并触发 onAuthFailure 重新判定（见下），而不是让面板卡死。
    */
   function ensureProxyStarted(): void {
     if (authProxyStarted || manager === null) return;
@@ -351,19 +357,30 @@ export function activate(context: vscode.ExtensionContext): void {
         if (manager!.getSnapshot().state !== 'ready') return null;
         const { host, port } = manager!.getTarget();
         const session = getValidSession(`${host}:${port}`, { fetchImpl: fetch, store: sessionStore });
-        if (session === undefined) return null; // 无会话（不应发生：ready 且 authState=ok 时必有；兜底 503）
-        return { url: `http://${host}:${port}`, cookie: session.cookie };
+        return { url: `http://${host}:${port}`, cookie: session?.cookie };
+      },
+      // 上游 401（会话失效/凭据被重置）：丢弃会话并回到 pending → runAuthOnce 重判
+      // （自启且有可用启动网址则自动重兑；外部服务则落到「需要登录」引导页，不永久卡 401）
+      onAuthFailure: () => {
+        if (authSessionState !== 'ok') return; // 防抖：只在 ok 状态下降级
+        appendLog('[auth] 上游返回 401：会话失效，重新判定…');
+        const { host, port } = manager!.getTarget();
+        dropSession(`${host}:${port}`, { fetchImpl: fetch, store: sessionStore });
+        authSessionState = 'pending';
+        refreshPanels();
+        setTimeout(() => void runAuthOnce(), 500);
       },
       log: (line) => appendLog(line),
     });
     authProxy = proxy;
     void proxy.start().then(() => {
+      if (authProxy !== proxy) return; // 启动期间已被停用/替换：不置位、不刷新
       authProxyStarted = true;
       appendLog(`[proxy] 本地代办就绪 http://127.0.0.1:${proxy.port}`);
       refreshPanels();
     }).catch((err) => {
       // 代理启动失败（端口被占等罕见）：记日志并复位，下次会话判定/兑换时重试
-      authProxy = null;
+      if (authProxy === proxy) authProxy = null;
       appendLog(`[proxy] 本地代办启动失败: ${String(err)}`);
     });
   }
@@ -432,7 +449,20 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   }
 
-  /** 「需要登录」引导页提交的启动网址：校验 → 兑换 → 反馈 */
+  /** 完成「手动登录成功」的统一收尾（no-auth 与裸地址探测共用） */
+  function markAuthReady(launch: string, logLine: string): void {
+    appendLog(logLine);
+    latestLaunchUrl = launch;
+    authSessionState = 'ok';
+    ensureProxyStarted();
+    refreshPanels();
+  }
+
+  /**
+   * 「需要登录」引导页提交的网址：校验 → 兑换 → 反馈。
+   * 接受两种输入：① DSH ≥0.1.2 的完整启动网址（带 ?token=…，兑换会话）；
+   * ② ≤0.1.1 外部启动的裸地址（无 token：探测 200 即无鉴权服务，直接可用）。
+   */
   async function handleAuthUrlSubmit(rawUrl: string): Promise<void> {
     try {
       // 容错：用户可能粘贴整行（带 dsh web: 前缀/尾部文本），取第一个 http(s) 网址段
@@ -442,29 +472,44 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
       const launch = m[0];
-      if (parseLaunchTarget(launch) === null) {
+      const target = serviceAuthority();
+      let url: URL;
+      try {
+        url = new URL(launch);
+      } catch {
+        void vscode.window.showErrorMessage(t('msg.authBadUrl'));
+        return;
+      }
+      if (url.hostname === '' || url.host === '') {
         void vscode.window.showErrorMessage(t('msg.authBadUrl'));
         return;
       }
       // host:port 必须与正在运行的服务一致（防止粘贴了另一台 DSH 的启动网址）
-      const target = serviceAuthority();
-      if (parseLaunchTarget(launch)!.authority !== target) {
-        void vscode.window.showWarningMessage(t('msg.authMismatch', { urlHost: parseLaunchTarget(launch)!.authority, targetHost: target }));
+      if (url.host !== target) {
+        void vscode.window.showWarningMessage(t('msg.authMismatch', { urlHost: url.host, targetHost: target }));
+        return;
+      }
+      if (!url.searchParams.has('token')) {
+        // 裸地址（≤0.1.1 外部启动的 dsh 打印无 token）：探测 200 = 无鉴权服务，直接可用；
+        // 若返回 401 则说明服务带鉴权，必须提供完整启动网址
+        try {
+          const res = await fetch(launch, { redirect: 'manual', signal: AbortSignal.timeout(3000) });
+          if (res.status === 200) {
+            markAuthReady(launch, '[auth] 裸地址探测为无鉴权 DSH（≤0.1.1），无需会话');
+            return;
+          }
+        } catch {
+          // 落到下方错误提示
+        }
+        void vscode.window.showErrorMessage(t('msg.authNeedToken'));
         return;
       }
       const r = await exchangeSession(launch, { fetchImpl: fetch, store: sessionStore });
       if (r.status === 'ok') {
-        appendLog(`[auth] 手动登录成功（${r.authority}，有效期至 ${new Date(r.expiresAt).toLocaleString()}）`);
-        latestLaunchUrl = launch;
-        authSessionState = 'ok';
-        ensureProxyStarted();
-        refreshPanels();
+        markAuthReady(launch, `[auth] 手动登录成功（${r.authority}，有效期至 ${new Date(r.expiresAt).toLocaleString()}）`);
         void vscode.window.showInformationMessage(t('msg.authOk'));
       } else if (r.status === 'no-auth') {
-        latestLaunchUrl = launch;
-        authSessionState = 'ok';
-        ensureProxyStarted();
-        refreshPanels();
+        markAuthReady(launch, '[auth] dsh 无浏览器鉴权，无需会话');
       } else {
         void vscode.window.showErrorMessage(t('msg.authRejected', { reason: r.reason }));
         refreshPanels(); // 保持 needed 引导页，用户可重试
@@ -704,14 +749,17 @@ export async function deactivate(): Promise<void> {
   } catch {
     // 清理失败不影响停用流程
   }
-  // 停用本地代办代理（会话 cookie 保留在 globalState，下次激活继续有效）
-  if (authProxyStarted && authProxy !== null) {
+  // 停用本地代办代理（无条件：覆盖 start() 仍在进行中的停用窗口；会话 cookie 保留在
+  // globalState，下次激活继续有效）
+  if (authProxy !== null) {
+    const proxy = authProxy;
+    authProxy = null;
+    authProxyStarted = false;
     try {
-      await authProxy.stop();
+      await proxy.stop();
     } catch {
       // 停用清理失败不影响扩展退出
     }
-    authProxyStarted = false;
   }
   const config = readConfig().config;
   if (config.stopOnExit) await manager?.stop();

@@ -105,6 +105,28 @@ test('目标未就绪（getTarget=null）→ 503', async () => {
   }
 });
 
+test('上游 401 → 透传的同时触发 onAuthFailure（会话失效自愈信号）', async () => {
+  const up = await serveUpstream((_req, res) => {
+    res.writeHead(401, { 'content-type': 'text/plain' });
+    res.end('dsh web authentication required; reopen the URL printed by dsh web.\n');
+  });
+  let failures = 0;
+  const proxy = createDshProxy({
+    getTarget: () => ({ url: `http://127.0.0.1:${up.port}`, cookie: 'dsh-auth-x=v1' }),
+    onAuthFailure: () => { failures += 1; },
+  });
+  await proxy.start();
+  try {
+    const res = await fetch(proxy.baseUrl);
+    assert.equal(res.status, 401, '401 应照常透传给客户端');
+    assert.equal(await res.text(), 'dsh web authentication required; reopen the URL printed by dsh web.\n');
+    assert.equal(failures, 1, '应恰好触发一次 onAuthFailure');
+  } finally {
+    await proxy.stop();
+    closeUp(up);
+  }
+});
+
 test('POST 大请求体（1MB）完整透传', async () => {
   const big = Buffer.alloc(1024 * 1024, 0x5a); // 1MB
   const up = await serveUpstream((req, res) => {

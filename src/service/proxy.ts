@@ -14,7 +14,13 @@
 //   真实 DSH authority（服务端按 Host 校验 cookie 绑定关系）；
 // - 剥离上游 set-cookie 响应头（iframe 里存 Strict cookie 无意义，且避免污染代理源 cookie）；
 // - WebSocket 升级透传（DSH 事件下行若走 WS 也能工作）；
-// - 目标未就绪（无会话/未配置）时返回 503 而不是挂起。
+// - 目标未就绪（manager 未 ready）时返回 503 而不是挂起。
+//
+// 安全模型（重要，供维护者评估）：本代理把一个「已带 30 天会话 cookie 的 DSH API」暴露在
+// 本机随机端口上，任意能连 127.0.0.1 的进程（含同机其他用户）都可驱动该会话——威胁面与
+// DSH ≤0.1.1（127.0.0.1:3080 裸服务、无任何鉴权）相同或更窄（随机端口需先扫描），
+// 不劣于被替代的旧架构；0.1.2 的鉴权主要防护对象是「网络暴露与跨站浏览器上下文」，
+// 本代理未重新引入网络暴露。跨用户加固（每次激活的共享密钥/请求来源校验）如需可后续追加。
 import http from 'node:http';
 import type { Socket } from 'node:net';
 
@@ -22,14 +28,19 @@ import type { Socket } from 'node:net';
 export interface ProxyTarget {
   /** 真实 DSH 地址（http://127.0.0.1:3080 或隧道可达地址） */
   url: string;
-  /** 注入的 Cookie 头值（name=value；无鉴权的旧版 dsh 可省略） */
+  /** 注入的 Cookie 头值（name=value；无鉴权的旧版 dsh 可省略=直通） */
   cookie?: string;
 }
 
 /** 代办依赖 */
 export interface DshProxyDeps {
-  /** 取当前转发目标；返回 null 时对请求回 503（服务未就绪/会话缺失） */
+  /** 取当前转发目标；返回 null 时对请求回 503（服务未就绪） */
   getTarget: () => ProxyTarget | null;
+  /**
+   * 上游返回 401（会话失效/服务端凭据被重置）时回调——只作为信号，不阻断透传。
+   * 由调用方决定是否丢弃会话并重新走兑换/登录（否则面板会永久停在 401 页）。
+   */
+  onAuthFailure?: () => void;
   /** 日志出口（可选） */
   log?: (line: string) => void;
 }
@@ -96,6 +107,7 @@ export function filterResponseHeaders(raw: http.IncomingHttpHeaders): http.Outgo
  */
 export function createDshProxy(deps: DshProxyDeps): DshProxy {
   let server: http.Server | null = null;
+  let closed = false; // stop() 已调用：start() 若在停用竞态窗口完成监听，须立即关闭
   const state = { port: 0, baseUrl: '' };
   /** 活跃的 WebSocket 升级连接：Node 的 server.close()/closeAllConnections() 都不管 upgrade
    * 连接（升级后由用户负责），stop 时必须自行销毁，否则 close 永不回调 */
@@ -110,6 +122,8 @@ export function createDshProxy(deps: DshProxyDeps): DshProxy {
     }
     const up = buildUpstreamRequest(req, target);
     const upReq = http.request(up, (upRes) => {
+      // 会话失效信号（401 由服务端凭据/会话状态决定）：透传的同时通知调用方自愈
+      if (upRes.statusCode === 401) deps.onAuthFailure?.();
       res.writeHead(upRes.statusCode ?? 502, filterResponseHeaders(upRes.headers));
       upRes.pipe(res); // 响应体流式透传（SSE/大文件不整包缓冲）
     });
@@ -166,8 +180,12 @@ export function createDshProxy(deps: DshProxyDeps): DshProxy {
       if (upHead.length > 0) clientSocket.write(upHead);
       upSocket.pipe(clientSocket);
       clientSocket.pipe(upSocket);
-      clientSocket.on('error', () => upSocket.destroy());
-      upSocket.on('error', () => clientSocket.destroy());
+      // 双向错误/关闭互传：任一端断开都要销毁另一端，防止上游 socket 滞留
+      const destroyPeer = (peer: Socket) => () => peer.destroy();
+      clientSocket.on('error', destroyPeer(upSocket));
+      upSocket.on('error', destroyPeer(clientSocket));
+      clientSocket.on('close', destroyPeer(upSocket));
+      upSocket.on('close', destroyPeer(clientSocket));
     });
     upReq.on('error', (err) => {
       deps.log?.(`[proxy] WebSocket 上游失败: ${String(err)}`);
@@ -185,18 +203,26 @@ export function createDshProxy(deps: DshProxyDeps): DshProxy {
     },
     start: async () => {
       if (server !== null) return; // 幂等
-      server = http.createServer(handleRequest);
-      server.on('upgrade', handleUpgrade);
+      const s = http.createServer(handleRequest);
+      s.on('upgrade', handleUpgrade);
+      server = s;
       await new Promise<void>((resolve, reject) => {
-        server!.once('error', reject);
-        server!.listen(0, '127.0.0.1', () => resolve());
+        s.once('error', reject);
+        s.listen(0, '127.0.0.1', () => resolve());
       });
-      const address = server.address();
+      const address = s.address();
       if (address === null || typeof address === 'string') throw new Error('proxy listen 失败');
+      if (closed) {
+        // 停用竞态：start 期间 stop() 已被调用，立即关掉刚完成的监听
+        s.closeAllConnections?.();
+        await new Promise<void>((resolve) => s.close(() => resolve()));
+        return;
+      }
       state.port = address.port;
       state.baseUrl = `http://127.0.0.1:${state.port}/`;
     },
     stop: async () => {
+      closed = true;
       const s = server;
       server = null;
       // 先销毁 upgrade 连接（server.close/closeAllConnections 不覆盖），否则 close 永不回调
