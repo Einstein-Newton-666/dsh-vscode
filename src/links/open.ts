@@ -85,16 +85,17 @@ export interface LinkOpenerDeps {
   store: LinkPreferenceStore;
   /** dsh.openLinksIn 的当前值 */
   configured: () => OpenLinksIn;
-  /** 在 VS Code 内置浏览器打开 */
+  /** 在 VS Code 内置浏览器打开；命令未注册时**同步抛错**——已核对 workbench 源码：
+   *  `throw new Error(\`No command with id ${id} NOT registered\`)`，故无需预先探测 */
   openSimpleBrowser: (url: string) => Promise<void>;
   /** 在系统浏览器打开 */
   openExternal: (url: string) => Promise<void>;
-  /** 内置浏览器命令可用性探测（simple-browser 可能被策略/设置禁用） */
-  hasSimpleBrowser: () => Promise<boolean>;
   /** 询问去向；返回 null = 用户取消 */
   prompt: () => Promise<{ target: LinkTarget; remember: boolean } | null>;
   /** 提示（降级时告知用户） */
   warn: (message: string) => void;
+  /** 诊断日志（生产接扩展输出通道，便于只凭日志定位失败原因） */
+  log?: (line: string) => void;
   /** 文案函数（默认取运行时字典） */
   tr?: Translate;
 }
@@ -102,6 +103,12 @@ export interface LinkOpenerDeps {
 /**
  * 按偏好打开一个 http(s) 外链。
  * 流程：记住的选择 → 配置项 → （ask 时）询问 → 执行 → 内置浏览器不可用时降级系统浏览器。
+ *
+ * 降级采用「直接调用 + 捕获」，**不是**「先探测可用性」：
+ * 早期实现用 `commands.getCommands()` 预检，一旦该列表缺项就会误判并降级——症状正是
+ * 「选了『在 VS Code 内打开』却开了系统浏览器」。而 executeCommand 失败会抛错，
+ * 直接捕获既可靠，又能在日志里留下真实原因。
+ *
  * @returns 实际使用的去向；用户取消返回 null
  */
 export async function openLinkByPreference(
@@ -122,15 +129,17 @@ export async function openLinkByPreference(
   }
 
   if (target === 'simpleBrowser') {
-    // 探测而非假设：禁用 simple-browser 的组织策略下该命令不存在
-    const available = await deps.hasSimpleBrowser().catch(() => false);
-    if (!available) {
+    try {
+      await deps.openSimpleBrowser(url);
+      return 'simpleBrowser';
+    } catch (err) {
+      // 内置浏览器不可用（simple-browser 被禁用/该构建无此命令）：降级，且必须让用户知道
+      const reason = err instanceof Error ? err.message : String(err);
+      deps.log?.(`[links] Simple Browser 打开失败，降级系统浏览器：${reason}`);
       deps.warn(tr('link.simpleBrowserUnavailable'));
       await deps.openExternal(url);
       return 'external';
     }
-    await deps.openSimpleBrowser(url);
-    return 'simpleBrowser';
   }
 
   await deps.openExternal(url);
@@ -156,13 +165,12 @@ export function createLinkOpener(deps: {
       openExternal: async (u) => {
         await vscode.env.openExternal(vscode.Uri.parse(u));
       },
-      hasSimpleBrowser: async () =>
-        (await vscode.commands.getCommands(true)).includes(SIMPLE_BROWSER_COMMAND),
       prompt: () =>
         askLinkTarget(t, (items, options) =>
           Promise.resolve(vscode.window.showQuickPick<LinkTargetPickItem>(items, options)),
         ),
       warn: (m) => void vscode.window.showWarningMessage(m),
+      log: deps.log,
     });
     if (target !== null) deps.log?.(`[links] 打开外链(${target}): ${url}`);
   };

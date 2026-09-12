@@ -13,35 +13,41 @@ const tr = (key: string): string => key;
 function makeDeps(overrides: {
   configured?: 'ask' | LinkTarget;
   remembered?: LinkTarget;
-  hasSimpleBrowser?: boolean;
+  /** 模拟内置浏览器命令不可用（executeCommand 同步抛错） */
+  simpleBrowserThrows?: string;
   pick?: LinkTargetPickItem | null;
 } = {}) {
   const calls: string[] = [];
   const warnings: string[] = [];
+  const logs: string[] = [];
   const store = createMemoryPreferenceStore();
   if (overrides.remembered !== undefined) store.set(overrides.remembered);
   return {
     calls,
     warnings,
+    logs,
     store,
     deps: {
       store,
       configured: () => overrides.configured ?? ('ask' as const),
       openSimpleBrowser: async (u: string) => {
+        if (overrides.simpleBrowserThrows !== undefined) {
+          throw new Error(overrides.simpleBrowserThrows);
+        }
         calls.push(`simpleBrowser:${u}`);
       },
       openExternal: async (u: string) => {
         calls.push(`external:${u}`);
       },
-      hasSimpleBrowser: async () => overrides.hasSimpleBrowser ?? true,
       prompt: async () =>
-        overrides.pick === undefined
+        overrides.pick === undefined || overrides.pick === null
           ? null
-          : overrides.pick === null
-            ? null
-            : { target: overrides.pick.target, remember: overrides.pick.remember },
+          : { target: overrides.pick.target, remember: overrides.pick.remember },
       warn: (m: string) => {
         warnings.push(m);
+      },
+      log: (m: string) => {
+        logs.push(m);
       },
       tr,
     },
@@ -135,21 +141,29 @@ test('记住的值优先于配置项', async () => {
   assert.deepEqual(calls, ['simpleBrowser:https://a.b']);
 });
 
-test('内置浏览器不可用：提示用户并降级到系统浏览器', async () => {
-  const { deps, calls, warnings } = makeDeps({ configured: 'simpleBrowser', hasSimpleBrowser: false });
+test('内置浏览器打开抛错（命令未注册）：提示用户并降级到系统浏览器', async () => {
+  const { deps, calls, warnings, logs } = makeDeps({
+    configured: 'simpleBrowser',
+    simpleBrowserThrows: 'No command with id simpleBrowser.show NOT registered',
+  });
   const used = await openLinkByPreference('https://a.b', deps);
   assert.equal(used, 'external');
   assert.deepEqual(calls, ['external:https://a.b']);
   assert.deepEqual(warnings, ['link.simpleBrowserUnavailable']);
+  // 日志必须留下真实原因，便于只凭输出通道定位（本次线上问题的教训）
+  assert.equal(logs.length, 1);
+  assert.ok(logs[0].includes('NOT registered'), `日志应含真实错误，实际：${logs[0]}`);
 });
 
-test('内置浏览器探测抛错：同样降级而不是让链接静默失败', async () => {
-  const { deps, calls, warnings } = makeDeps({ configured: 'simpleBrowser' });
-  deps.hasSimpleBrowser = async () => {
-    throw new Error('commands unavailable');
+test('内置浏览器抛出非 Error 值：同样降级且不静默', async () => {
+  const { deps, calls, warnings, logs } = makeDeps({ configured: 'simpleBrowser' });
+  deps.openSimpleBrowser = async () => {
+    throw 'boom'; // 非 Error 抛出物
   };
   const used = await openLinkByPreference('https://a.b', deps);
   assert.equal(used, 'external');
   assert.deepEqual(calls, ['external:https://a.b']);
-  assert.equal(warnings.length, 1);
+  assert.deepEqual(warnings, ['link.simpleBrowserUnavailable']);
+  assert.equal(logs.length, 1);
+  assert.ok(logs[0].includes('boom'), `非 Error 也应可读，实际：${logs[0]}`);
 });
