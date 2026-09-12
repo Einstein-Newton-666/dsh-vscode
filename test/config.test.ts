@@ -11,7 +11,7 @@ test('合法配置原样通过', () => {
   assert.deepEqual(config, {
     host: 'localhost', port: 4000, autoStart: false, stopOnExit: false, extraArgs: ['--trusted-host', 'x:1'],
     bridgeEnabled: true, workspaceRootIndex: 0, silenceWarning: false, executablePath: '',
-    openInBrowser: false, remoteEnabled: false, imageFallback: true,
+    openInBrowser: false, remoteEnabled: false, imageFallback: true, openLinksIn: 'ask',
   });
 });
 
@@ -122,4 +122,25 @@ test('v0.3.0 新设置非布尔值回退默认（不记错误）', () => {
   assert.equal(r2.errors.length, 0);
   assert.equal(r3.errors.length, 0);
   assert.equal(r4.errors.length, 0);
+});
+
+test('dsh.openLinksIn 三值枚举：合法值原样通过', () => {
+  for (const v of ['ask', 'simpleBrowser', 'external'] as const) {
+    const { config, errors } = normalizeConfig({ openLinksIn: v });
+    assert.equal(config.openLinksIn, v);
+    assert.deepEqual(errors, []);
+  }
+});
+
+test('dsh.openLinksIn 非法值回退 ask 并记录错误', () => {
+  const { config, errors } = normalizeConfig({ openLinksIn: 'browser' });
+  assert.equal(config.openLinksIn, 'ask');
+  assert.equal(errors.length, 1);
+  assert.ok(errors[0].includes('openLinksIn'), `错误信息应含设置名，实际：${errors[0]}`);
+});
+
+test('dsh.openLinksIn 缺省不记错误（静默回退默认）', () => {
+  const r = normalizeConfig({});
+  assert.equal(r.config.openLinksIn, DEFAULTS.openLinksIn);
+  assert.deepEqual(r.errors, []);
 });

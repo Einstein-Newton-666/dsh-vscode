@@ -255,6 +255,21 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "%dsh.config.imageFallback%"
+        },
+        "dsh.openLinksIn": {
+          "type": "string",
+          "default": "ask",
+          "enum": [
+            "ask",
+            "simpleBrowser",
+            "external"
+          ],
+          "enumDescriptions": [
+            "%dsh.config.openLinksIn.ask%",
+            "%dsh.config.openLinksIn.simpleBrowser%",
+            "%dsh.config.openLinksIn.external%"
+          ],
+          "markdownDescription": "%dsh.config.openLinksIn%"
         }
       }
     }

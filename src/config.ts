@@ -2,6 +2,7 @@
 // 纯函数（normalizeConfig / isLoopbackHost）不依赖 vscode，可直接单测；
 // readConfig 是 vscode 设置的薄封装，供 extension.ts 使用。
 import * as vscode from 'vscode';
+import { normalizeOpenLinksIn, DEFAULT_OPEN_LINKS_IN, type OpenLinksIn } from './links/preference';
 
 /** 用户可配置的原始值（可能缺失/非法） */
 export interface RawDshConfig {
@@ -24,6 +25,8 @@ export interface RawDshConfig {
   remoteEnabled?: boolean;
   /** 模型无视觉能力时是否自动把图片降级为文本+路径转发（默认开启） */
   imageFallback?: boolean;
+  /** 面板内点击外链的去向：ask（默认，每次询问）/ simpleBrowser（VS Code 内置浏览器）/ external（系统浏览器） */
+  openLinksIn?: string;
 }
 
 /** 规范化后的配置（均有合法默认值） */
@@ -47,6 +50,8 @@ export interface DshConfig {
   remoteEnabled: boolean;
   /** 非视觉模型下发图自动降级为文本+路径转发 */
   imageFallback: boolean;
+  /** 面板内点击外链的在何处打开（ask=每次询问 / simpleBrowser=内置浏览器 / external=系统浏览器） */
+  openLinksIn: OpenLinksIn;
 }
 
 /** 默认配置 */
@@ -63,6 +68,7 @@ export const DEFAULTS: DshConfig = {
   openInBrowser: false,
   remoteEnabled: false,
   imageFallback: true,
+  openLinksIn: DEFAULT_OPEN_LINKS_IN,
 };
 
 /** 安全边界：仅允许回环地址 */
@@ -134,10 +140,18 @@ export function normalizeConfig(raw: RawDshConfig): { config: DshConfig; errors:
   const remoteEnabled = typeof raw.remoteEnabled === 'boolean' ? raw.remoteEnabled : DEFAULTS.remoteEnabled;
   const imageFallback = typeof raw.imageFallback === 'boolean' ? raw.imageFallback : DEFAULTS.imageFallback;
 
+  // openLinksIn：三值枚举，非法值回退 ask 并记录错误（与 host/port 同类处理）
+  const openLinksIn = normalizeOpenLinksIn(raw.openLinksIn);
+  if (raw.openLinksIn !== undefined && openLinksIn !== raw.openLinksIn) {
+    errors.push(
+      `dsh.openLinksIn must be one of "ask" | "simpleBrowser" | "external", got ${JSON.stringify(raw.openLinksIn)}`,
+    );
+  }
+
   return {
     config: {
       host, port, autoStart, stopOnExit, extraArgs, bridgeEnabled, workspaceRootIndex,
-      silenceWarning, executablePath, openInBrowser, remoteEnabled, imageFallback,
+      silenceWarning, executablePath, openInBrowser, remoteEnabled, imageFallback, openLinksIn,
     },
     errors,
   };
@@ -159,5 +173,6 @@ export function readConfig(): { config: DshConfig; errors: string[] } {
     openInBrowser: ws.get<boolean>('openInBrowser'),
     remoteEnabled: ws.get<boolean>('remote.enabled'),
     imageFallback: ws.get<boolean>('image.fallback'),
+    openLinksIn: ws.get<string>('openLinksIn'),
   });
 }

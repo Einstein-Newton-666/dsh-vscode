@@ -54,6 +54,9 @@ export class DshPanelProvider implements vscode.WebviewViewProvider {
    * @param remoteEnabled 是否启用远程（SSH Remote 等）的 getter（v0.3.0，默认关闭）
    * @param resolveExternalUrl URL→本地可达 URL 解析器（远程走 asExternalUri 隧道；默认原样返回）
    * @param imageFallback 是否启用非视觉模型图片降级（v0.3.0，默认开）
+   * @param ui 面板增强接线（鉴权三态、iframe 基地址覆盖、启动网址提交回调）
+   * @param openUrl 打开外链的实现（v0.5.0：由 dsh.openLinksIn 决定进 VS Code 内置浏览器或系统浏览器；
+   *   默认保持旧行为——直接交给系统浏览器，便于测试与未接线场景）
    */
   constructor(
     private manager: ServiceManager,
@@ -65,6 +68,8 @@ export class DshPanelProvider implements vscode.WebviewViewProvider {
     private resolveExternalUrl: (url: string) => Promise<string> = async (u) => u,
     private imageFallback: () => boolean = () => true,
     private ui: PanelProviderUiOpts = {},
+    private openUrl: (url: string) => Thenable<unknown> = (u) =>
+      vscode.env.openExternal(vscode.Uri.parse(u)),
   ) {
     // 订阅状态变化，重绘面板（iframe 与占位页由状态驱动，无白屏路径）
     manager.onChange(() => void this.handleStateChange());
@@ -172,7 +177,10 @@ export class DshPanelProvider implements vscode.WebviewViewProvider {
   /** 桥接落盘/删除依赖：图片缓存写文件/删文件（node:fs/promises）与回执投递（webview.postMessage） */
   private bridgeDeps(): Parameters<typeof handleBridgeMessage>[1] {
     return {
-      openExternal: (u) => vscode.env.openExternal(vscode.Uri.parse(u)),
+      // 外链去向由注入的 openUrl 决定（dsh.openLinksIn：ask / 内置浏览器 / 系统浏览器）；
+      // 兜底与默认实现均为系统浏览器，未接线时行为与旧版一致。
+      // `!!` 是必要的：host 层的依赖约定返回 Thenable<boolean>，而注入的打开器只保证"已执行"。
+      openExternal: async (u) => !!this.openUrl(u),
       // showTextDocument 返回 TextEditor，而依赖约定返回 Thenable<void>：用 async 包装丢弃返回值
       openTextDocument: async (p) => {
         await vscode.window.showTextDocument(vscode.Uri.file(p), { preview: false });

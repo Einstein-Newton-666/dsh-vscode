@@ -67,6 +67,18 @@ const messages = {
     'bridge.neverAgain': "Don't Show Again",
     'bridge.uninstalled': 'DSH bridge uninstalled. Restart the DSH service for the change to take effect.',
     'bridge.uninstallFailed': 'Failed to uninstall DSH bridge: {message}',
+    // 外链打开方式（dsh.openLinksIn；面板内点击链接时询问/直开）
+    'link.pickPlaceholder': 'Where should this link open?',
+    'link.openInVscode': 'Open in VS Code',
+    'link.openInVscodeDesc': 'Built-in Simple Browser (blank page if the site blocks embedding)',
+    'link.openInSystem': 'Open in system browser',
+    'link.openInSystemDesc': 'Your default browser outside VS Code',
+    'link.alwaysVscode': 'Always open in VS Code',
+    'link.alwaysVscodeDesc': 'Remember this choice; change it via the dsh.openLinksIn setting',
+    'link.alwaysSystem': 'Always open in system browser',
+    'link.alwaysSystemDesc': 'Remember this choice; change it via the dsh.openLinksIn setting',
+    'link.simpleBrowserUnavailable':
+      'VS Code Simple Browser is unavailable (disabled by policy or settings); opened in the system browser instead.',
   },
   zh: {
     'panel.loading': '正在启动 DSH 服务…',
@@ -126,6 +138,17 @@ const messages = {
     'bridge.neverAgain': '不再提示',
     'bridge.uninstalled': 'DSH 桥接已卸载，重启 DSH 服务后生效。',
     'bridge.uninstallFailed': '卸载 DSH 桥接失败：{message}',
+    // 外链打开方式（dsh.openLinksIn；面板内点击链接时询问/直开）
+    'link.pickPlaceholder': '这个链接在哪里打开？',
+    'link.openInVscode': '在 VS Code 内打开',
+    'link.openInVscodeDesc': '内置简单浏览器（站点禁止被嵌入时会显示空白页）',
+    'link.openInSystem': '用系统浏览器打开',
+    'link.openInSystemDesc': 'VS Code 之外的默认浏览器',
+    'link.alwaysVscode': '始终在 VS Code 内打开',
+    'link.alwaysVscodeDesc': '记住这个选择；可通过 dsh.openLinksIn 设置修改',
+    'link.alwaysSystem': '始终用系统浏览器打开',
+    'link.alwaysSystemDesc': '记住这个选择；可通过 dsh.openLinksIn 设置修改',
+    'link.simpleBrowserUnavailable': 'VS Code 内置简单浏览器不可用（被策略或设置关闭），已改用系统浏览器打开。',
   },
 } as const;
 

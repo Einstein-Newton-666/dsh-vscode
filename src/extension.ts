@@ -29,6 +29,8 @@ import {
   type BridgeInstallResult,
 } from './bridge/installer';
 import { cleanupAllImageCaches, cleanupStaleImageCaches } from './bridge/host';
+import { createLinkOpener } from './links/open';
+import { normalizeOpenLinksIn, type LinkPreferenceStore } from './links/preference';
 import * as nodeFs from 'node:fs/promises';
 import { evaluateBridgeStatus, bridgeWarningText } from './bridge/status';
 
@@ -578,6 +580,24 @@ export function activate(context: vscode.ExtensionContext): void {
     asExternalUri: async (uri) => await vscode.env.asExternalUri(vscode.Uri.parse(uri.toString())),
   });
 
+  // 外链打开方式（v0.5.0）：dsh.openLinksIn 决定「询问 / VS Code 内置浏览器 / 系统浏览器」。
+  // "记住我的选择"写在 globalState（与鉴权会话同一存储策略），优先级高于配置项。
+  const linkPrefKey = 'linkOpenPreference';
+  const linkPrefStore: LinkPreferenceStore = {
+    get: () => {
+      const v = context.globalState.get<string>(linkPrefKey);
+      return v === 'simpleBrowser' || v === 'external' ? v : undefined;
+    },
+    set: (value) => {
+      void context.globalState.update(linkPrefKey, value);
+    },
+  };
+  const openLink = createLinkOpener({
+    store: linkPrefStore,
+    configured: () => normalizeOpenLinksIn(readConfig().config.openLinksIn),
+    log: appendLog,
+  });
+
   // 左右两侧各一个 provider 实例，共享同一 manager（服务状态一致）
   const panelPrimary = new DshPanelProvider(
     manager,
@@ -592,6 +612,7 @@ export function activate(context: vscode.ExtensionContext): void {
     resolveExternalUrl, // resolveExternalUrl：远程窗口的 URL 隧道解析
     imageFallbackGetter, // imageFallback：dsh.image.fallback 驱动图片降级
     panelUi(), // 会话三态 / 代理地址覆盖 / 登录提交（DSH ≥0.1.2 鉴权适配）
+    openLink, // openUrl：面板内点击外链的去向（dsh.openLinksIn）
   );
   const panelSecondary = new DshPanelProvider(
     manager,
@@ -603,6 +624,7 @@ export function activate(context: vscode.ExtensionContext): void {
     resolveExternalUrl,
     imageFallbackGetter,
     panelUi(),
+    openLink,
   );
   panels.push(panelPrimary, panelSecondary);
   new StatusBarController(manager);
